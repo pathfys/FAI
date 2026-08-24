@@ -57,6 +57,12 @@ DB_FILE = "users.json"
 OWNERS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "owners.db")
 GIFT_CACHE_TTL = 86400  # 24 часа
 
+# ─── ОБЯЗАТЕЛЬНАЯ ПОДПИСКА НА КАНАЛ ──────────────────────────────────────────
+# Бот ДОЛЖЕН быть админом канала, иначе getChatMember вернёт ошибку и никто
+# не пройдёт проверку. Вместо @username можно указать числовой id (-100...).
+SUB_CHANNEL_ID = "@fiestagod"
+CHANNEL_LINK = "https://t.me/fiestagod"
+
 # ─── ФИЛЬТРЫ ПОИСКА ──────────────────────────────────────────────────────────
 FILTER_MAX_LEVEL = 4       # не показывать выше этого уровня (0 = выкл)
 FILTER_MIN_GIFTS = 1
@@ -569,6 +575,26 @@ def get_users_count() -> int:
 # ═══════════════════════════════════════════════════════════════════════════
 #  КЛАВИАТУРЫ
 # ═══════════════════════════════════════════════════════════════════════════
+async def is_subscribed(user_id: int) -> bool:
+    """Проверяет, состоит ли юзер в канале SUB_CHANNEL_ID."""
+    if user_id == ADMIN_ID:
+        return True
+    try:
+        member = await bot.get_chat_member(SUB_CHANNEL_ID, user_id)
+        status = getattr(member.status, "value", str(member.status)).lower()
+        return status in ("member", "administrator", "creator", "owner", "restricted")
+    except Exception as e:
+        print(f"[sub] check failed for {user_id}: {type(e).__name__}: {e}")
+        return False
+
+
+def subscribe_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")],
+    ])
+
+
 def menu_kb():
     """Главное меню."""
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1311,6 +1337,17 @@ async def find_gift_owners_live(user_id: int, gift_name: str, limit: int, messag
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     add_user(message.from_user.id, message.from_user.username or "")
+
+    if not await is_subscribed(message.from_user.id):
+        await message.answer(
+            "🔒 <b>Доступ только для подписчиков</b>\n\n"
+            f"Подпишись на канал и нажми «Проверить подписку».\n"
+            f"{CHANNEL_LINK}",
+            reply_markup=subscribe_kb(), parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
+
     await message.answer(
         "<b>🎁 NFT Gift Parser</b>\n\nВыберите действие:",
         reply_markup=menu_kb(), parse_mode="HTML",
@@ -1320,6 +1357,18 @@ async def cmd_start(message: Message):
 @dp.callback_query(lambda c: c.data == "back_menu")
 async def cb_back_menu(callback: CallbackQuery):
     await callback.answer()
+    await callback.message.edit_text(
+        "<b>🎁 NFT Gift Parser</b>\n\nВыберите действие:",
+        reply_markup=menu_kb(), parse_mode="HTML",
+    )
+
+
+@dp.callback_query(lambda c: c.data == "check_sub")
+async def cb_check_sub(callback: CallbackQuery):
+    if not await is_subscribed(callback.from_user.id):
+        await callback.answer("❌ Ты всё ещё не подписан!", show_alert=True)
+        return
+    await callback.answer("✅ Подписка подтверждена!")
     await callback.message.edit_text(
         "<b>🎁 NFT Gift Parser</b>\n\nВыберите действие:",
         reply_markup=menu_kb(), parse_mode="HTML",
