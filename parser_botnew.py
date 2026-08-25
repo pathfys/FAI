@@ -70,6 +70,17 @@ SEARCH_TIMEOUT = 180.0     # верхняя граница одного поис
 # только стоят в очереди и создают contention. 15 — рабочий запас.
 SEARCH_CONCURRENCY = 15
 
+# ─── РЕЖИМ «РАНДОМ»: БЕЗ ФИЛЬТРОВ ────────────────────────────────────────────
+# Никакой фильтрации: в выдачу идёт ЛЮБОЙ найденный владелец, независимо от
+# уровня, количества подарков и цены сообщений. Именно фильтр съедал время —
+# при отсеве ~80% на каждый результат уходило в 5 раз больше API-вызовов.
+RANDOM_USE_FILTER = False
+# True  — подтягивать профиль (уровень / подарки / цена сообщения): это +3
+#         API-вызова на каждого найденного владельца.
+# False — не подтягивать: примерно на треть быстрее, но в выдаче вместо
+#         «⭐ ур.4 · 🎁 3» будет «⭐ ур.— · 🎁 —».
+RANDOM_SHOW_PROFILE = True
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  БД (owners.db) — создаём ВСЕ таблицы, база общая с market_tracker.py
@@ -209,6 +220,8 @@ def db_set_cache(user_id: int, has_gifts: bool, gift_count: int):
 #  ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ═══════════════════════════════════════════════════════════════════════════
 # Ровно столько, сколько реально тянет пул: сессии × concurrency (сейчас 2×2=4).
+# Это жёсткий потолок скорости: быстрее можно только добавив сессий в
+# POOL_SESSIONS (или подняв POOL_CONCURRENCY_PER_SESSION, но это риск FloodWait).
 _PYRO_SEM = asyncio.Semaphore(max(2, len(POOL_SESSIONS) * POOL_CONCURRENCY_PER_SESSION))
 # ВАЖНО: глобальный флуд-таймер больше НЕ блокирует задачи. FloodWait живёт
 # внутри пула (per-session flood_until в SessionProxy._run), а эта переменная
@@ -747,8 +760,8 @@ def random_entry(tier: str | None = None) -> tuple[str, int]:
 
 
 async def generate_random(limit: int, tier: str | None = None,
-                          use_filter: bool = True, message=None) -> list[dict]:
-    """Стриминговый поиск случайных NFT с владельцами.
+                          use_filter: bool = RANDOM_USE_FILTER, message=None) -> list[dict]:
+    """Стриминговый поиск случайных NFT с владельцами. БЕЗ ФИЛЬТРОВ.
 
     Держим SEARCH_CONCURRENCY задач «в полёте» и пополняем пул на КАЖДОЙ
     итерации: как только задача отвалилась (нет владельца, FloodWait, фильтр),
@@ -757,6 +770,10 @@ async def generate_random(limit: int, tier: str | None = None,
 
     fetch_bg здесь не вызывается: для рандома фон всё равно приходил как
     "Unknown", а это лишний HTTP-запрос на каждую запись.
+
+    Фильтры по уровню / числу подарков не применяются (RANDOM_USE_FILTER),
+    поэтому каждый найденный владелец сразу идёт в выдачу — на результат
+    уходит ~10 API-вызовов вместо ~48 с фильтром.
     """
     found, seen_ids = [], set()
     last_text = ""
@@ -824,6 +841,19 @@ async def generate_random(limit: int, tier: str | None = None,
             if not uid or uid in seen_ids:
                 continue
             seen_ids.add(uid)
+
+            if not RANDOM_SHOW_PROFILE:
+                # самый быстрый путь: профиль не запрашиваем вообще
+                res["level"] = res["gifts"] = res["paid_msg"] = None
+                res["name"] = res.get("nft_name")
+                res["id"] = res.get("nft_id")
+                if len(found) < limit:
+                    found.append(res)
+                    await render()
+                continue
+
+            # use_filter=False → enrich никогда не отбраковывает владельца,
+            # только дописывает уровень / подарки / цену сообщения
             et = asyncio.create_task(enrich_and_filter(res, use_filter=use_filter))
             et._is_enrich = True
             enrich_pending.add(et)
