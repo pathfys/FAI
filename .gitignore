@@ -1,0 +1,12 @@
+# секреты
+.env
+
+# база автоответчика
+agent.db
+agent.db-wal
+agent.db-shm
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
