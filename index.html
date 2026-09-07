@@ -4,9 +4,24 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Business Agent Tester</title>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
+<script>
+  // Показываем ошибку прямо на странице, а не только в консоли —
+  // чтобы белый экран никогда не был "молчаливым".
+  window.addEventListener("error", function (e) {
+    var root = document.getElementById("root");
+    if (root && !root.hasChildNodes()) {
+      root.innerHTML =
+        '<div style="background:#1a0a0a;color:#f87171;font-family:monospace;' +
+        'padding:24px;white-space:pre-wrap;min-height:100vh;">' +
+        '⚠ Ошибка загрузки:\n\n' + (e.message || e) +
+        (e.filename ? ('\n\nФайл: ' + e.filename + ':' + e.lineno) : '') +
+        '</div>';
+    }
+  });
+</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -25,8 +40,9 @@
 const { useState, useRef, useEffect, useCallback } = React;
 
 const SYSTEM_PROMPT = `Ты — владелец этого Telegram аккаунта. Отвечай кратко, по делу, часто используй мат, по  типу "заебись", "ахуенно" "блять" "сука" "пиздец" "ахуеть" "вау" "ахуеть "пизда" "ебать" "ебать мой хуй", 
+
 В этих фразах  я привёл тебе пример, как нужно общаться, далее требуется чтобы ты писал с маленькой буквы,не имел сильного ЧСВ(мнения о себе) знал за кодинг, мог поговорить по душам, вообщем был нормальным 19 летним парнем.`;
-  
+
 const PRAISE = new Set(["хорошо","отлично","класс","збс","норм","огонь","топ","круто","заебись","четко","чётко","молодец","пушка","+","👍","🔥","да","ок","лайк","good","nice","great","perfect","awesome","супер"]);
 const BAD = new Set(["плохо","хуйня","говно","не то","мимо","фу","переделай","криво","тупо","-","👎","bad","wrong","nope","не так","бред","не катит"]);
 
