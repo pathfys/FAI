@@ -1,4 +1,28 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Business Agent Tester</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0f1a; }
+  ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+  .blink { animation: blink 1s infinite; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useCallback } = React;
 
 const SYSTEM_PROMPT = `Ты — владелец этого Telegram аккаунта. Отвечай кратко, по делу, дружелюбно, на языке собеседника.
 Если не знаешь ответ — скажи что владелец ответит позже.
@@ -15,7 +39,7 @@ function classify(text) {
   return null;
 }
 
-async function callAI(messages) {
+async function callAI(messages, apiKey) {
   const body = {
     model: "claude-sonnet-4-6",
     max_tokens: 400,
@@ -24,9 +48,18 @@ async function callAI(messages) {
   };
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
     body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+  }
   const data = await res.json();
   return (data.content || []).map(b => b.text || "").join("").trim();
 }
@@ -36,19 +69,20 @@ const TS = () => {
   return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
 };
 
-export default function AgentTester() {
+function AgentTester() {
   const [lines, setLines] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [stats, setStats] = useState({ total: 0, good: 0, bad: 0, latency: [] });
   const [awaitFB, setAwaitFB] = useState(false);
-  const [lastAnswer, setLastAnswer] = useState("");
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("anthropic_api_key") || "");
+  const [showKeyInput, setShowKeyInput] = useState(!localStorage.getItem("anthropic_api_key"));
   const endRef = useRef(null);
   const inputRef = useRef(null);
 
   const scroll = () => setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-  
+
   const addLine = useCallback((type, text, meta) => {
     setLines(prev => [...prev, { type, text, meta, ts: TS() }]);
     scroll();
@@ -61,22 +95,28 @@ export default function AgentTester() {
     addLine("info", "Пиши как собеседник в Telegram. Бот ответит в стиле владельца.");
     addLine("info", "После ответа оцени: 👍 хорошо / 👎 плохо / или новый вопрос.");
     addLine("dim", "───────────────────────────────────────────────────────");
-    addLine("cmd", "/stats — статистика  /reset — сбросить  /prompt — промпт");
+    addLine("cmd", "/stats — статистика  /reset — сбросить  /prompt — промпт  /key — сменить API-ключ");
     addLine("dim", "───────────────────────────────────────────────────────");
-    addLine("success", "✅ Модель: claude-sonnet-4-6 (бесплатно в артефакте)");
+    addLine("success", "✅ Модель: claude-sonnet-4-6");
     addLine("dim", "");
   }, []);
 
-  useEffect(() => {
-    if (!loading) inputRef.current?.focus();
-  }, [loading]);
+  useEffect(() => { if (!showKeyInput) inputRef.current?.focus(); }, [lines, loading, showKeyInput]);
 
-  const handleSubmit = async () => {
+  const saveKey = (key) => {
+    setApiKey(key);
+    localStorage.setItem("anthropic_api_key", key);
+    setShowKeyInput(false);
+    addLine("success", "🔑 Ключ сохранён локально в этом браузере.");
+    addLine("dim", "");
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     const text = input.trim();
     if (!text || loading) return;
     setInput("");
 
-    // Commands
     if (text === "/stats") {
       const { total, good, bad, latency } = stats;
       const avg = latency.length ? (latency.reduce((a,b) => a+b, 0) / latency.length).toFixed(1) : "—";
@@ -108,8 +148,11 @@ export default function AgentTester() {
       addLine("dim", "───────────────────────────────────────────────────────");
       return;
     }
+    if (text === "/key") {
+      setShowKeyInput(true);
+      return;
+    }
 
-    // Feedback?
     if (awaitFB) {
       const fb = classify(text);
       if (fb === "good") {
@@ -129,7 +172,12 @@ export default function AgentTester() {
       setAwaitFB(false);
     }
 
-    // User message
+    if (!apiKey) {
+      addLine("error", "  ❌ Сначала введи API-ключ (команда /key)");
+      setShowKeyInput(true);
+      return;
+    }
+
     addLine("user", text);
     const newHistory = [...history, { role: "user", content: text }];
     setHistory(newHistory);
@@ -137,7 +185,7 @@ export default function AgentTester() {
 
     const t0 = Date.now();
     try {
-      const answer = await callAI(newHistory);
+      const answer = await callAI(newHistory, apiKey);
       const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
       const num = stats.total + 1;
 
@@ -153,7 +201,6 @@ export default function AgentTester() {
         latency: [...s.latency, parseFloat(elapsed)],
       }));
       setHistory([...newHistory, { role: "assistant", content: answer }]);
-      setLastAnswer(answer);
 
       addLine("bot", answer, { elapsed, num });
       addLine("dim", "");
@@ -174,9 +221,6 @@ export default function AgentTester() {
       success: { color: "#4ade80" },
       warn:    { color: "#facc15" },
       error:   { color: "#f87171" },
-      user:    { color: "#38bdf8" },
-      bot:     { color: "#4ade80" },
-      fb:      { color: "#a78bfa" },
     };
 
     if (line.type === "user") {
@@ -205,7 +249,7 @@ export default function AgentTester() {
     }
 
     return (
-      <div key={i} style={{ ...styles[line.type], padding: "1px 0", paddingLeft: line.type === "dim" ? 0 : 0 }}>
+      <div key={i} style={{ ...styles[line.type], padding: "1px 0" }}>
         {line.text}
       </div>
     );
@@ -223,7 +267,6 @@ export default function AgentTester() {
       display: "flex",
       flexDirection: "column",
     }}>
-      {/* Top bar */}
       <div style={{
         background: "#111827",
         borderBottom: "1px solid #1e293b",
@@ -251,28 +294,59 @@ export default function AgentTester() {
         </div>
       </div>
 
-      {/* Terminal body */}
-      <div style={{
-        flex: 1,
-        overflowY: "auto",
-        padding: "12px 16px",
-      }}
-        onClick={() => inputRef.current?.focus()}
-      >
+      {showKeyInput && (
+        <div style={{
+          background: "#111827",
+          borderBottom: "1px solid #1e293b",
+          padding: "10px 16px",
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+        }}>
+          <span style={{ color: "#facc15", fontSize: 12, whiteSpace: "nowrap" }}>🔑 API-ключ:</span>
+          <input
+            type="password"
+            placeholder="sk-ant-..."
+            defaultValue={apiKey}
+            id="key-input"
+            style={{
+              flex: 1,
+              background: "#0a0f1a",
+              border: "1px solid #1e293b",
+              borderRadius: 4,
+              padding: "4px 8px",
+              color: "#e2e8f0",
+              fontSize: 12,
+              fontFamily: "inherit",
+              outline: "none",
+            }}
+            onKeyDown={e => { if (e.key === "Enter") saveKey(e.target.value.trim()); }}
+          />
+          <button
+            onClick={() => saveKey(document.getElementById("key-input").value.trim())}
+            style={{
+              background: "#1d4ed8", color: "#fff", border: "none",
+              borderRadius: 4, padding: "4px 12px", fontSize: 12,
+              fontFamily: "inherit", cursor: "pointer",
+            }}
+          >
+            Сохранить
+          </button>
+        </div>
+      )}
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }} onClick={() => inputRef.current?.focus()}>
         {lines.map(renderLine)}
-        
         {loading && (
           <div style={{ color: "#64748b", padding: "4px 0", display: "flex", gap: 8, alignItems: "center" }}>
             <span style={{ fontSize: 11, minWidth: 55 }}>{TS()}</span>
             <span className="blink" style={{ color: "#facc15" }}>⏳ Думаю...</span>
           </div>
         )}
-        
         <div ref={endRef} />
       </div>
 
-      {/* Input */}
-      <div style={{
+      <form onSubmit={handleSubmit} style={{
         borderTop: "1px solid #1e293b",
         padding: "10px 16px",
         display: "flex",
@@ -288,49 +362,33 @@ export default function AgentTester() {
           ref={inputRef}
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && !loading && input.trim()) handleSubmit(); }}
           disabled={loading}
           placeholder={awaitFB ? "👍 / 👎 / или новый вопрос..." : "напиши сообщение..."}
           style={{
-            flex: 1,
-            background: "transparent",
-            border: "none",
-            outline: "none",
-            color: "#e2e8f0",
-            fontSize: 13,
-            fontFamily: "inherit",
-            caretColor: "#38bdf8",
+            flex: 1, background: "transparent", border: "none", outline: "none",
+            color: "#e2e8f0", fontSize: 13, fontFamily: "inherit", caretColor: "#38bdf8",
           }}
+          autoFocus
         />
         <button
-          type="button"
-          onClick={handleSubmit}
+          type="submit"
           disabled={loading || !input.trim()}
           style={{
             background: loading ? "#1e293b" : "#1d4ed8",
-            color: "#fff",
-            border: "none",
-            borderRadius: 4,
-            padding: "4px 12px",
-            fontSize: 12,
-            fontFamily: "inherit",
+            color: "#fff", border: "none", borderRadius: 4,
+            padding: "4px 12px", fontSize: 12, fontFamily: "inherit",
             cursor: loading ? "not-allowed" : "pointer",
             opacity: loading || !input.trim() ? 0.4 : 1,
           }}
         >
           ⏎
         </button>
-      </div>
-
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: #0a0f1a; }
-        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
-        .blink { animation: blink 1s infinite; }
-        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-      `}</style>
+      </form>
     </div>
   );
 }
+
+ReactDOM.createRoot(document.getElementById("root")).render(<AgentTester />);
+</script>
+</body>
+</html>
