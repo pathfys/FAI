@@ -1,0 +1,6 @@
+aiogram>=3.10,<4
+telethon>=1.36,<2
+SQLAlchemy>=2.0,<3
+aiosqlite>=0.20,<1
+cryptography>=43.0,<44
+python-dotenv>=1.0,<2
