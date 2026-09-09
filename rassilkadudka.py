@@ -309,7 +309,7 @@ class SentLog(Base):
     __table_args__ = (
         Index("ix_sent_log_dedup", "account_id", "target", "campaign_id"),
     )
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
     )
@@ -325,6 +325,16 @@ class SentLog(Base):
 
 async def init_db() -> None:
     async with engine.begin() as conn:
+        try:
+            result = await conn.execute(
+                sqlalchemy_text("SELECT sql FROM sqlite_master WHERE name='sent_log'")
+            )
+            row = result.fetchone()
+            if row and row[0] and "BIGINT" in row[0].upper():
+                await conn.execute(sqlalchemy_text("DROP TABLE sent_log"))
+                logger.info("Миграция: пересоздана таблица sent_log (BIGINT -> INTEGER)")
+        except Exception:
+            pass
         await conn.run_sync(Base.metadata.create_all)
         for col, col_type in [
             ("text_entities", "TEXT"),
@@ -1071,10 +1081,27 @@ async def process_code(message: Message, state: FSMContext) -> None:
         )
     except Exception as exc:
         error_name = type(exc).__name__
-        if "SessionPasswordNeeded" in error_name or "password" in str(exc).lower():
+        error_str = str(exc).lower()
+        if "SessionPasswordNeeded" in error_name or "password" in error_str:
             await message.answer("Включена двухфакторная аутентификация. Введи пароль:")
             await state.set_state(AddAccountStates.password)
             return
+        if "expired" in error_str or "PhoneCodeExpired" in error_name:
+            try:
+                sent = await client.send_code_request(info["phone"])
+                info["phone_code_hash"] = sent.phone_code_hash
+                await message.answer(
+                    "Код истёк. Новый код отправлен.\n"
+                    "Введи код быстрее (действует ~2 минуты):"
+                )
+                return
+            except Exception as resend_err:
+                logger.error("Ошибка повторной отправки кода: %s", resend_err)
+                await message.answer(f"Не удалось отправить новый код: {resend_err}")
+                await client.disconnect()
+                _pending_clients.pop(message.from_user.id, None)
+                await state.clear()
+                return
         logger.error("Ошибка входа: %s", exc)
         await message.answer(f"Ошибка входа: {exc}")
         await client.disconnect()
