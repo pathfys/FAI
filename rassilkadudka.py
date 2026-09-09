@@ -278,6 +278,7 @@ class Campaign(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     text_entities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
     status: Mapped[str] = mapped_column(String(16), default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
@@ -325,15 +326,19 @@ class SentLog(Base):
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        try:
-            await conn.execute(
-                sqlalchemy_text(
-                    "ALTER TABLE campaigns ADD COLUMN text_entities TEXT"
+        for col, col_type in [
+            ("text_entities", "TEXT"),
+            ("photo_file_id", "VARCHAR(512)"),
+        ]:
+            try:
+                await conn.execute(
+                    sqlalchemy_text(
+                        f"ALTER TABLE campaigns ADD COLUMN {col} {col_type}"
+                    )
                 )
-            )
-            logger.info("Миграция: добавлена колонка text_entities")
-        except Exception:
-            pass
+                logger.info("Миграция: добавлена колонка %s", col)
+            except Exception:
+                pass
 
 
 # ══════════════════════════════════════════════
@@ -411,6 +416,7 @@ async def send_one_message(
     text: str,
     campaign_id: int,
     text_entities: str | None = None,
+    photo_file_id: str | None = None,
 ) -> bool:
     if await is_duplicate(account.id, recipient.target, campaign_id):
         logger.info(
@@ -433,7 +439,21 @@ async def send_one_message(
         if recipient.target.isdigit():
             target = int(recipient.target)
         telethon_ents = deserialize_to_telethon_entities(text_entities)
-        if telethon_ents:
+        if photo_file_id:
+            photo_msg = await _bot_instance.download(photo_file_id)
+            if photo_msg:
+                photo_bytes = photo_msg.read()
+                await client.send_file(
+                    target, photo_bytes,
+                    caption=text,
+                    formatting_entities=telethon_ents,
+                )
+            else:
+                if telethon_ents:
+                    await client.send_message(target, text, formatting_entities=telethon_ents)
+                else:
+                    await client.send_message(target, text)
+        elif telethon_ents:
             await client.send_message(target, text, formatting_entities=telethon_ents)
         else:
             await client.send_message(target, text)
@@ -486,6 +506,7 @@ async def send_one_message(
 
 _running_tasks: dict[int, asyncio.Task] = {}
 _stop_events: dict[int, asyncio.Event] = {}
+_bot_instance: Bot | None = None
 
 
 async def create_campaign_db(
@@ -495,10 +516,12 @@ async def create_campaign_db(
     account_ids: list[int],
     targets: list[str],
     text_entities: str | None = None,
+    photo_file_id: str | None = None,
 ) -> Campaign:
     async with await get_db() as session:
         campaign = Campaign(
             name=name, text=text, text_entities=text_entities,
+            photo_file_id=photo_file_id,
             interval_seconds=interval_seconds, status="draft",
         )
         session.add(campaign)
@@ -678,7 +701,10 @@ async def _run_campaign_loop(campaign_id: int) -> None:
 
         recipient = pending[0]
         account = next(account_cycle)
-        await send_one_message(account, recipient, campaign.text, campaign_id, campaign.text_entities)
+        await send_one_message(
+            account, recipient, campaign.text, campaign_id,
+            campaign.text_entities, campaign.photo_file_id,
+        )
 
         try:
             await asyncio.wait_for(
@@ -1173,8 +1199,11 @@ async def cb_select_account(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer("Выбери хотя бы один аккаунт.")
             return
         await callback.message.edit_text(
-            "Введи текст сообщения для рассылки.\n"
-            "Поддерживается Markdown и любые эмодзи:"
+            "Отправь сообщение для рассылки.\n\n"
+            "Можно:\n"
+            "- просто текст\n"
+            "- фото с подписью (фото + текст в одном сообщении)\n"
+            "- премиум-эмодзи, жирный, курсив"
         )
         await state.set_state(CreateCampaignStates.text)
         await callback.answer()
@@ -1199,11 +1228,17 @@ async def process_campaign_text(message: Message, state: FSMContext) -> None:
     text = message.text or message.caption
     entities = message.entities or message.caption_entities
     if not text:
-        await message.answer("Сообщение не содержит текста. Отправь текстовое сообщение:")
+        await message.answer(
+            "Сообщение не содержит текста. Отправь текст или фото с подписью:"
+        )
         return
+    photo_file_id: str | None = None
+    if message.photo:
+        photo_file_id = message.photo[-1].file_id
     await state.update_data(
         text=text,
         text_entities=serialize_entities(entities),
+        photo_file_id=photo_file_id,
     )
     await message.answer(
         f"Введи интервал между сообщениями в секундах "
@@ -1264,11 +1299,13 @@ async def process_campaign_recipients(message: Message, state: FSMContext) -> No
     await state.update_data(targets=targets)
     data = await state.get_data()
 
+    has_photo = "да" if data.get("photo_file_id") else "нет"
     preview = (
         f"Рассылка: {data['name']}\n"
         f"Аккаунтов: {len(data['selected_accounts'])}\n"
         f"Интервал: {data['interval']} сек.\n"
-        f"Получателей: {len(targets)}\n\n"
+        f"Получателей: {len(targets)}\n"
+        f"Фото: {has_photo}\n\n"
         f"Текст сообщения:\n{data.get('text') or '(не задан)'}"
     )
 
@@ -1296,6 +1333,7 @@ async def cb_confirm_campaign(callback: CallbackQuery, state: FSMContext) -> Non
         name=data["name"],
         text=data["text"],
         text_entities=data.get("text_entities"),
+        photo_file_id=data.get("photo_file_id"),
         interval_seconds=data["interval"],
         account_ids=data["selected_accounts"],
         targets=data["targets"],
@@ -1503,6 +1541,7 @@ async def cmd_edit_campaign(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(edit_campaign_id=cid)
+    has_photo = "да" if campaign.photo_file_id else "нет"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1513,12 +1552,21 @@ async def cmd_edit_campaign(message: Message, state: FSMContext) -> None:
                     text="Изменить интервал", callback_data="cmp:edit:interval"
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text="Изменить фото", callback_data="cmp:edit:photo"
+                ),
+                InlineKeyboardButton(
+                    text="Убрать фото", callback_data="cmp:edit:rmphoto"
+                ),
+            ],
             [InlineKeyboardButton(text="Отмена", callback_data="menu:campaigns")],
         ]
     )
     await message.answer(
         f'Редактирование рассылки [{cid}] "{campaign.name}".\n'
         f"Текущий интервал: {campaign.interval_seconds} сек.\n"
+        f"Фото: {has_photo}\n"
         f"Текущий текст:\n{campaign.text}",
         reply_markup=kb,
     )
@@ -1527,9 +1575,24 @@ async def cmd_edit_campaign(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("cmp:edit:"))
 async def cb_edit_field(callback: CallbackQuery, state: FSMContext) -> None:
     field = callback.data.split(":")[2]
+    if field == "rmphoto":
+        data = await state.get_data()
+        cid = data["edit_campaign_id"]
+        ok = await update_campaign_db(cid, photo_file_id=None)
+        if ok:
+            await callback.message.edit_text("Фото удалено из рассылки.")
+        else:
+            await callback.message.edit_text("Не удалось обновить.")
+        await state.clear()
+        await callback.answer()
+        return
     await state.update_data(edit_field=field)
     if field == "text":
-        await callback.message.edit_text("Введи новый текст сообщения:")
+        await callback.message.edit_text(
+            "Отправь новое сообщение (текст или фото с подписью):"
+        )
+    elif field == "photo":
+        await callback.message.edit_text("Отправь новое фото:")
     else:
         await callback.message.edit_text(
             f"Введи новый интервал в секундах (мин. {MIN_INTERVAL_SECONDS}):"
@@ -1554,6 +1617,12 @@ async def process_edit_value(message: Message, state: FSMContext) -> None:
             await message.answer(f"Минимум {MIN_INTERVAL_SECONDS} сек.")
             return
         ok = await update_campaign_db(cid, interval_seconds=val)
+    elif field == "photo":
+        if not message.photo:
+            await message.answer("Отправь фото. Попробуй ещё раз:")
+            return
+        photo_fid = message.photo[-1].file_id
+        ok = await update_campaign_db(cid, photo_file_id=photo_fid)
     else:
         text = message.text or message.caption
         entities = message.entities or message.caption_entities
@@ -1561,7 +1630,8 @@ async def process_edit_value(message: Message, state: FSMContext) -> None:
             await message.answer("Сообщение не содержит текста. Попробуй ещё раз:")
             return
         ents = serialize_entities(entities)
-        ok = await update_campaign_db(cid, text=text, text_entities=ents)
+        photo_fid = message.photo[-1].file_id if message.photo else None
+        ok = await update_campaign_db(cid, text=text, text_entities=ents, photo_file_id=photo_fid)
 
     if ok:
         await message.answer(f"Рассылка {cid} обновлена.")
@@ -1657,7 +1727,9 @@ async def main() -> None:
     logger.info("Инициализация базы данных...")
     await init_db()
 
+    global _bot_instance
     bot = Bot(token=BOT_TOKEN)
+    _bot_instance = bot
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.message.middleware(AdminOnlyMiddleware())
