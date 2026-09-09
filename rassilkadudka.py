@@ -40,6 +40,7 @@ from sqlalchemy import (
     Text,
     func,
     select,
+    text as sqlalchemy_text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -324,6 +325,15 @@ class SentLog(Base):
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(
+                sqlalchemy_text(
+                    "ALTER TABLE campaigns ADD COLUMN text_entities TEXT"
+                )
+            )
+            logger.info("Миграция: добавлена колонка text_entities")
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════
