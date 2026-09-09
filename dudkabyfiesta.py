@@ -45,6 +45,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     MessageEntityBlockquote,
@@ -511,12 +512,71 @@ async def send_one_message(
         )
         return True
 
+    except FloodWaitError as fwe:
+        wait_sec = fwe.seconds if hasattr(fwe, "seconds") else 60
+        logger.warning(
+            "Флуд-лимит: аккаунт=%d получатель=%s ждём %d сек",
+            account.id, recipient.target, wait_sec,
+        )
+        await client.disconnect()
+        await asyncio.sleep(wait_sec + 5)
+        client2 = make_telethon_client(account)
+        try:
+            await client2.connect()
+            target2: str | int = recipient.target
+            if recipient.target.isdigit():
+                target2 = int(recipient.target)
+            telethon_ents2 = deserialize_to_telethon_entities(text_entities)
+            if photo_file_id and _bot_instance:
+                try:
+                    photo_io2 = await _bot_instance.download(photo_file_id)
+                except Exception:
+                    photo_io2 = None
+                if photo_io2:
+                    buf2 = io.BytesIO(photo_io2.read())
+                    buf2.name = "photo.jpg"
+                    await client2.send_file(
+                        target2, buf2, caption=msg_text or None,
+                        formatting_entities=telethon_ents2, force_document=False,
+                    )
+                elif msg_text:
+                    await client2.send_message(target2, msg_text, formatting_entities=telethon_ents2 or None)
+                else:
+                    return False
+            elif msg_text:
+                await client2.send_message(target2, msg_text, formatting_entities=telethon_ents2 or None)
+            else:
+                return False
+
+            ts = now_utc()
+            async with await get_db() as session:
+                r = await session.get(Recipient, recipient.id)
+                if r:
+                    r.status = "sent"
+                    r.sent_at = ts
+                log_entry = SentLog(
+                    account_id=account.id, recipient_id=recipient.id,
+                    campaign_id=campaign_id, target=recipient.target, sent_at=ts,
+                )
+                session.add(log_entry)
+                await session.commit()
+            logger.info("Отправлено после ожидания: аккаунт=%d -> %s", account.id, recipient.target)
+            return True
+        except Exception as exc2:
+            logger.error("Ошибка после ожидания флуд-лимита: %s (%s)", exc2, type(exc2).__name__)
+            async with await get_db() as session:
+                r = await session.get(Recipient, recipient.id)
+                if r:
+                    r.status = "error"
+                    r.error_message = str(exc2)[:500]
+                    await session.commit()
+            return False
+        finally:
+            await client2.disconnect()
     except Exception as exc:
         logger.error(
-            "Ошибка отправки: аккаунт=%d получатель=%s ошибка=%s",
-            account.id,
-            recipient.target,
-            exc,
+            "Ошибка отправки: аккаунт=%d получатель=%s ошибка=%s (%s)",
+            account.id, recipient.target, exc, type(exc).__name__,
         )
         async with await get_db() as session:
             r = await session.get(Recipient, recipient.id)
@@ -526,7 +586,10 @@ async def send_one_message(
                 await session.commit()
         return False
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════
@@ -770,7 +833,8 @@ async def _run_campaign_loop(campaign_id: int) -> None:
             except Exception as exc:
                 consecutive_errors += 1
                 logger.error(
-                    "Ошибка в цикле рассылки %d: %s", campaign_id, exc
+                    "Ошибка в цикле рассылки %d: %s (%s)",
+                    campaign_id, exc or "(пустая ошибка)", type(exc).__name__,
                 )
                 async with await get_db() as session:
                     r = await session.get(Recipient, recipient.id)
