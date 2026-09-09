@@ -19,6 +19,7 @@ import asyncio
 import base64
 import csv
 import io
+import json
 import logging
 import os
 import re
@@ -44,10 +45,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import (
+    MessageEntityBlockquote,
+    MessageEntityBold,
+    MessageEntityCode,
+    MessageEntityCustomEmoji,
+    MessageEntityItalic,
+    MessageEntityPre,
+    MessageEntitySpoiler,
+    MessageEntityStrike,
+    MessageEntityTextUrl,
+    MessageEntityUnderline,
+)
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -165,6 +176,62 @@ def export_logs_csv(rows: list[dict]) -> str:
     return output.getvalue()
 
 
+def serialize_entities(entities: list | None) -> str | None:
+    if not entities:
+        return None
+    result = []
+    for e in entities:
+        entry = {"type": e.type, "offset": e.offset, "length": e.length}
+        if getattr(e, "url", None):
+            entry["url"] = e.url
+        if getattr(e, "language", None):
+            entry["language"] = e.language
+        if getattr(e, "custom_emoji_id", None):
+            entry["custom_emoji_id"] = str(e.custom_emoji_id)
+        result.append(entry)
+    return json.dumps(result, ensure_ascii=False)
+
+
+_ENTITY_TYPE_MAP = {
+    "bold": MessageEntityBold,
+    "italic": MessageEntityItalic,
+    "underline": MessageEntityUnderline,
+    "strikethrough": MessageEntityStrike,
+    "code": MessageEntityCode,
+    "spoiler": MessageEntitySpoiler,
+    "blockquote": MessageEntityBlockquote,
+}
+
+
+def deserialize_to_telethon_entities(json_str: str | None) -> list | None:
+    if not json_str:
+        return None
+    data = json.loads(json_str)
+    entities = []
+    for e in data:
+        t = e["type"]
+        offset = e["offset"]
+        length = e["length"]
+        cls = _ENTITY_TYPE_MAP.get(t)
+        if cls:
+            entities.append(cls(offset=offset, length=length))
+        elif t == "pre":
+            entities.append(
+                MessageEntityPre(offset=offset, length=length, language=e.get("language", ""))
+            )
+        elif t == "text_link":
+            entities.append(
+                MessageEntityTextUrl(offset=offset, length=length, url=e.get("url", ""))
+            )
+        elif t == "custom_emoji":
+            doc_id = int(e.get("custom_emoji_id", 0))
+            if doc_id:
+                entities.append(
+                    MessageEntityCustomEmoji(offset=offset, length=length, document_id=doc_id)
+                )
+    return entities if entities else None
+
+
 # ══════════════════════════════════════════════
 # Модели базы данных
 # ══════════════════════════════════════════════
@@ -209,6 +276,7 @@ class Campaign(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_entities: Mapped[str | None] = mapped_column(Text, nullable=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
     status: Mapped[str] = mapped_column(String(16), default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
@@ -332,6 +400,7 @@ async def send_one_message(
     recipient: Recipient,
     text: str,
     campaign_id: int,
+    text_entities: str | None = None,
 ) -> bool:
     if await is_duplicate(account.id, recipient.target, campaign_id):
         logger.info(
@@ -353,7 +422,11 @@ async def send_one_message(
         target: str | int = recipient.target
         if recipient.target.isdigit():
             target = int(recipient.target)
-        await client.send_message(target, text, parse_mode="md")
+        telethon_ents = deserialize_to_telethon_entities(text_entities)
+        if telethon_ents:
+            await client.send_message(target, text, formatting_entities=telethon_ents)
+        else:
+            await client.send_message(target, text)
 
         ts = now_utc()
         async with await get_db() as session:
@@ -411,10 +484,12 @@ async def create_campaign_db(
     interval_seconds: int,
     account_ids: list[int],
     targets: list[str],
+    text_entities: str | None = None,
 ) -> Campaign:
     async with await get_db() as session:
         campaign = Campaign(
-            name=name, text=text, interval_seconds=interval_seconds, status="draft"
+            name=name, text=text, text_entities=text_entities,
+            interval_seconds=interval_seconds, status="draft",
         )
         session.add(campaign)
         await session.flush()
@@ -593,7 +668,7 @@ async def _run_campaign_loop(campaign_id: int) -> None:
 
         recipient = pending[0]
         account = next(account_cycle)
-        await send_one_message(account, recipient, campaign.text, campaign_id)
+        await send_one_message(account, recipient, campaign.text, campaign_id, campaign.text_entities)
 
         try:
             await asyncio.wait_for(
@@ -1111,7 +1186,10 @@ async def cb_select_account(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(CreateCampaignStates.text)
 async def process_campaign_text(message: Message, state: FSMContext) -> None:
-    await state.update_data(text=message.text)
+    await state.update_data(
+        text=message.text,
+        text_entities=serialize_entities(message.entities),
+    )
     await message.answer(
         f"Введи интервал между сообщениями в секундах "
         f"(минимум {MIN_INTERVAL_SECONDS}):"
@@ -1202,6 +1280,7 @@ async def cb_confirm_campaign(callback: CallbackQuery, state: FSMContext) -> Non
     campaign = await create_campaign_db(
         name=data["name"],
         text=data["text"],
+        text_entities=data.get("text_entities"),
         interval_seconds=data["interval"],
         account_ids=data["selected_accounts"],
         targets=data["targets"],
@@ -1461,7 +1540,8 @@ async def process_edit_value(message: Message, state: FSMContext) -> None:
             return
         ok = await update_campaign_db(cid, interval_seconds=val)
     else:
-        ok = await update_campaign_db(cid, text=message.text)
+        ents = serialize_entities(message.entities)
+        ok = await update_campaign_db(cid, text=message.text, text_entities=ents)
 
     if ok:
         await message.answer(f"Рассылка {cid} обновлена.")
@@ -1557,10 +1637,7 @@ async def main() -> None:
     logger.info("Инициализация базы данных...")
     await init_db()
 
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
-    )
+    bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.message.middleware(AdminOnlyMiddleware())
