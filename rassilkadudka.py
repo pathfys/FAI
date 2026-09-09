@@ -462,10 +462,13 @@ async def send_one_message(
                 photo_io = None
             if photo_io:
                 photo_bytes = photo_io.read()
+                buf = io.BytesIO(photo_bytes)
+                buf.name = "photo.jpg"
                 await client.send_file(
-                    target, photo_bytes,
+                    target, buf,
                     caption=msg_text or None,
                     formatting_entities=telethon_ents,
+                    force_document=False,
                 )
             elif msg_text:
                 if telethon_ents:
