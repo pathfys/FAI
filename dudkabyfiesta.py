@@ -413,11 +413,15 @@ async def is_duplicate(account_id: int, target: str, campaign_id: int) -> bool:
 async def send_one_message(
     account: Account,
     recipient: Recipient,
-    text: str,
+    text: str | None,
     campaign_id: int,
     text_entities: str | None = None,
     photo_file_id: str | None = None,
 ) -> bool:
+    if not text and not photo_file_id:
+        logger.error("Кампания %d: пустое сообщение (нет текста и фото)", campaign_id)
+        return False
+
     if await is_duplicate(account.id, recipient.target, campaign_id):
         logger.info(
             "Дубль пропущен: аккаунт=%d получатель=%s кампания=%d",
@@ -432,6 +436,7 @@ async def send_one_message(
                 await session.commit()
         return False
 
+    msg_text = text or ""
     client = make_telethon_client(account)
     try:
         await client.connect()
@@ -439,24 +444,35 @@ async def send_one_message(
         if recipient.target.isdigit():
             target = int(recipient.target)
         telethon_ents = deserialize_to_telethon_entities(text_entities)
-        if photo_file_id:
-            photo_msg = await _bot_instance.download(photo_file_id)
-            if photo_msg:
-                photo_bytes = photo_msg.read()
+        if photo_file_id and _bot_instance:
+            try:
+                photo_io = await _bot_instance.download(photo_file_id)
+            except Exception as dl_err:
+                logger.warning("Не удалось скачать фото: %s", dl_err)
+                photo_io = None
+            if photo_io:
+                photo_bytes = photo_io.read()
                 await client.send_file(
                     target, photo_bytes,
-                    caption=text,
+                    caption=msg_text or None,
                     formatting_entities=telethon_ents,
                 )
-            else:
+            elif msg_text:
                 if telethon_ents:
-                    await client.send_message(target, text, formatting_entities=telethon_ents)
+                    await client.send_message(target, msg_text, formatting_entities=telethon_ents)
                 else:
-                    await client.send_message(target, text)
-        elif telethon_ents:
-            await client.send_message(target, text, formatting_entities=telethon_ents)
+                    await client.send_message(target, msg_text)
+            else:
+                logger.error("Фото не скачалось и текст пустой, пропуск")
+                return False
+        elif msg_text:
+            if telethon_ents:
+                await client.send_message(target, msg_text, formatting_entities=telethon_ents)
+            else:
+                await client.send_message(target, msg_text)
         else:
-            await client.send_message(target, text)
+            logger.error("Нечего отправлять: нет текста и фото")
+            return False
 
         ts = now_utc()
         async with await get_db() as session:
@@ -673,6 +689,14 @@ async def export_campaign_logs_db(campaign_id: int) -> list[dict]:
         ]
 
 
+async def _notify_admin(text: str) -> None:
+    if _bot_instance:
+        try:
+            await _bot_instance.send_message(ADMIN_USER_ID, text)
+        except Exception:
+            logger.error("Не удалось отправить уведомление админу")
+
+
 async def _run_campaign_loop(campaign_id: int) -> None:
     stop_event = _stop_events.get(campaign_id)
     if not stop_event:
@@ -682,42 +706,97 @@ async def _run_campaign_loop(campaign_id: int) -> None:
     if not campaign:
         return
 
-    accounts = await get_campaign_accounts_db(campaign_id)
-    if not accounts:
-        logger.error("Кампания %d: нет активных аккаунтов", campaign_id)
+    if not campaign.text:
+        await _notify_admin(
+            f"Рассылка [{campaign_id}]: текст сообщения пустой!\n"
+            "Отредактируй текст: /edit_campaign " + str(campaign_id)
+        )
         async with await get_db() as session:
             c = await session.get(Campaign, campaign_id)
             if c:
                 c.status = "paused"
                 await session.commit()
+        _stop_events.pop(campaign_id, None)
+        _running_tasks.pop(campaign_id, None)
+        return
+
+    accounts = await get_campaign_accounts_db(campaign_id)
+    if not accounts:
+        logger.error("Кампания %d: нет активных аккаунтов", campaign_id)
+        await _notify_admin(f"Рассылка [{campaign_id}]: нет активных аккаунтов!")
+        async with await get_db() as session:
+            c = await session.get(Campaign, campaign_id)
+            if c:
+                c.status = "paused"
+                await session.commit()
+        _stop_events.pop(campaign_id, None)
+        _running_tasks.pop(campaign_id, None)
         return
 
     account_cycle = cycle(accounts)
+    consecutive_errors = 0
+    max_consecutive_errors = 10
 
-    while not stop_event.is_set():
-        pending = await get_pending_recipients_db(campaign_id)
-        if not pending:
-            break
+    try:
+        while not stop_event.is_set():
+            pending = await get_pending_recipients_db(campaign_id)
+            if not pending:
+                break
 
-        recipient = pending[0]
-        account = next(account_cycle)
-        await send_one_message(
-            account, recipient, campaign.text, campaign_id,
-            campaign.text_entities, campaign.photo_file_id,
+            recipient = pending[0]
+            account = next(account_cycle)
+            try:
+                success = await send_one_message(
+                    account, recipient, campaign.text, campaign_id,
+                    campaign.text_entities, campaign.photo_file_id,
+                )
+                if success:
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+            except Exception as exc:
+                consecutive_errors += 1
+                logger.error(
+                    "Ошибка в цикле рассылки %d: %s", campaign_id, exc
+                )
+                async with await get_db() as session:
+                    r = await session.get(Recipient, recipient.id)
+                    if r and r.status == "pending":
+                        r.status = "error"
+                        r.error_message = str(exc)[:500]
+                        await session.commit()
+
+            if consecutive_errors >= max_consecutive_errors:
+                await _notify_admin(
+                    f"Рассылка [{campaign_id}]: {max_consecutive_errors} ошибок подряд.\n"
+                    f"Рассылка приостановлена. Проверь аккаунты и логи."
+                )
+                break
+
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=campaign.interval_seconds
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    except Exception as exc:
+        logger.error("Критическая ошибка в рассылке %d: %s", campaign_id, exc)
+        await _notify_admin(
+            f"Рассылка [{campaign_id}] упала с ошибкой:\n{exc}"
         )
-
-        try:
-            await asyncio.wait_for(
-                stop_event.wait(), timeout=campaign.interval_seconds
-            )
-            break
-        except asyncio.TimeoutError:
-            pass
 
     async with await get_db() as session:
         c = await session.get(Campaign, campaign_id)
         if c:
-            c.status = "paused" if stop_event.is_set() else "finished"
+            remaining = await get_pending_recipients_db(campaign_id)
+            if not remaining:
+                c.status = "finished"
+            elif stop_event.is_set():
+                c.status = "paused"
+            else:
+                c.status = "paused"
             await session.commit()
 
     _stop_events.pop(campaign_id, None)
