@@ -1,17 +1,17 @@
 """
-Telegram Crypto Broadcast Bot - single-file version.
+Телеграм-бот для рассылки рекламных сообщений (крипто-обмен).
 
-Dependencies:
+Зависимости:
     pip install aiogram telethon SQLAlchemy aiosqlite cryptography python-dotenv
 
-Environment variables (.env):
-    BOT_TOKEN=your_telegram_bot_token
+Переменные окружения (.env):
+    BOT_TOKEN=токен_бота
     ADMIN_USER_ID=123456789
     DATABASE_URL=sqlite+aiosqlite:///bot.db
-    ENCRYPTION_KEY=<fernet key>
+    ENCRYPTION_KEY=<ключ fernet>
     LOG_FILE=bot.log
 
-Generate ENCRYPTION_KEY:
+Сгенерировать ENCRYPTION_KEY:
     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 """
 
@@ -62,7 +62,7 @@ from aiogram.types import (
 )
 
 # ══════════════════════════════════════════════
-# Config
+# Конфигурация
 # ══════════════════════════════════════════════
 
 load_dotenv()
@@ -86,7 +86,7 @@ logging.basicConfig(
 logger = logging.getLogger("broadcast_bot")
 
 # ══════════════════════════════════════════════
-# Crypto helpers
+# Шифрование
 # ══════════════════════════════════════════════
 
 _fernet_key: bytes | None = None
@@ -101,7 +101,8 @@ def _get_key() -> bytes:
     else:
         _fernet_key = Fernet.generate_key()
         logger.warning(
-            "No ENCRYPTION_KEY set. Generated ephemeral key: %s", _fernet_key.decode()
+            "ENCRYPTION_KEY не задан. Сгенерирован временный ключ: %s",
+            _fernet_key.decode(),
         )
     return _fernet_key
 
@@ -119,7 +120,7 @@ def decrypt(ciphertext: str) -> str:
 
 
 # ══════════════════════════════════════════════
-# Utilities
+# Утилиты
 # ══════════════════════════════════════════════
 
 _TG_LINK_RE = re.compile(r"https?://t\.me/([A-Za-z0-9_]{5,})")
@@ -130,15 +131,6 @@ def now_utc() -> datetime:
 
 
 def parse_recipients(text: str) -> list[str]:
-    """Parse usernames/user_ids from free-form text.
-
-    Handles:
-      - comma / semicolon / whitespace separated
-      - @username prefix
-      - https://t.me/username links
-      - one per line (from .txt files)
-      - mixed formats in one input
-    """
     result: list[str] = []
     seen: set[str] = set()
 
@@ -174,7 +166,7 @@ def export_logs_csv(rows: list[dict]) -> str:
 
 
 # ══════════════════════════════════════════════
-# Database models
+# Модели базы данных
 # ══════════════════════════════════════════════
 
 engine = create_async_engine(DATABASE_URL, echo=False)
@@ -267,7 +259,7 @@ async def init_db() -> None:
 
 
 # ══════════════════════════════════════════════
-# Account manager
+# Управление аккаунтами
 # ══════════════════════════════════════════════
 
 
@@ -285,7 +277,7 @@ async def add_account_to_db(
         session.add(account)
         await session.commit()
         await session.refresh(account)
-        logger.info("Account added: id=%d phone=%s", account.id, phone)
+        logger.info("Аккаунт добавлен: id=%d phone=%s", account.id, phone)
         return account
 
 
@@ -302,7 +294,7 @@ async def remove_account_db(account_id: int) -> bool:
             return False
         await session.delete(account)
         await session.commit()
-        logger.info("Account removed: id=%d", account_id)
+        logger.info("Аккаунт удален: id=%d", account_id)
         return True
 
 
@@ -314,7 +306,7 @@ def make_telethon_client(account: Account) -> TelegramClient:
 
 
 # ══════════════════════════════════════════════
-# Sender (single message + duplicate check)
+# Отправка сообщений + проверка дублей
 # ══════════════════════════════════════════════
 
 
@@ -343,7 +335,7 @@ async def send_one_message(
 ) -> bool:
     if await is_duplicate(account.id, recipient.target, campaign_id):
         logger.info(
-            "Duplicate skipped: account=%d target=%s campaign=%d",
+            "Дубль пропущен: аккаунт=%d получатель=%s кампания=%d",
             account.id,
             recipient.target,
             campaign_id,
@@ -380,7 +372,7 @@ async def send_one_message(
             await session.commit()
 
         logger.info(
-            "Sent: account=%d -> %s (campaign=%d)",
+            "Отправлено: аккаунт=%d -> %s (кампания=%d)",
             account.id,
             recipient.target,
             campaign_id,
@@ -389,7 +381,7 @@ async def send_one_message(
 
     except Exception as exc:
         logger.error(
-            "Send error: account=%d target=%s err=%s",
+            "Ошибка отправки: аккаунт=%d получатель=%s ошибка=%s",
             account.id,
             recipient.target,
             exc,
@@ -406,7 +398,7 @@ async def send_one_message(
 
 
 # ══════════════════════════════════════════════
-# Campaign manager
+# Управление кампаниями
 # ══════════════════════════════════════════════
 
 _running_tasks: dict[int, asyncio.Task] = {}
@@ -432,7 +424,7 @@ async def create_campaign_db(
             session.add(Recipient(campaign_id=campaign.id, target=t, status="pending"))
         await session.commit()
         await session.refresh(campaign)
-        logger.info("Campaign created: id=%d name=%s", campaign.id, name)
+        logger.info("Кампания создана: id=%d название=%s", campaign.id, name)
         return campaign
 
 
@@ -584,7 +576,7 @@ async def _run_campaign_loop(campaign_id: int) -> None:
 
     accounts = await get_campaign_accounts_db(campaign_id)
     if not accounts:
-        logger.error("Campaign %d has no active accounts", campaign_id)
+        logger.error("Кампания %d: нет активных аккаунтов", campaign_id)
         async with await get_db() as session:
             c = await session.get(Campaign, campaign_id)
             if c:
@@ -619,23 +611,23 @@ async def _run_campaign_loop(campaign_id: int) -> None:
 
     _stop_events.pop(campaign_id, None)
     _running_tasks.pop(campaign_id, None)
-    logger.info("Campaign %d ended", campaign_id)
+    logger.info("Кампания %d завершена", campaign_id)
 
 
 async def start_campaign_action(campaign_id: int) -> str | None:
     if campaign_id in _running_tasks:
-        return "Campaign is already running."
+        return "Кампания уже запущена."
     campaign = await get_campaign_db(campaign_id)
     if not campaign:
-        return "Campaign not found."
+        return "Кампания не найдена."
     if campaign.status == "finished":
-        return "Campaign is already finished."
+        return "Кампания уже завершена."
     accounts = await get_campaign_accounts_db(campaign_id)
     if not accounts:
-        return "No active accounts linked to this campaign."
+        return "К кампании не привязаны активные аккаунты."
     pending = await get_pending_recipients_db(campaign_id)
     if not pending:
-        return "No pending recipients."
+        return "Нет получателей в ожидании."
 
     async with await get_db() as session:
         c = await session.get(Campaign, campaign_id)
@@ -653,7 +645,7 @@ async def start_campaign_action(campaign_id: int) -> str | None:
 
 async def stop_campaign_action(campaign_id: int) -> str | None:
     if campaign_id not in _running_tasks:
-        return "Campaign is not running."
+        return "Кампания не запущена."
     _stop_events[campaign_id].set()
     try:
         await asyncio.wait_for(_running_tasks[campaign_id], timeout=30)
@@ -663,7 +655,7 @@ async def stop_campaign_action(campaign_id: int) -> str | None:
 
 
 # ══════════════════════════════════════════════
-# Middleware: admin-only access
+# Мидлварь: только администратор
 # ══════════════════════════════════════════════
 
 
@@ -685,7 +677,7 @@ class AdminOnlyMiddleware(BaseMiddleware):
 
 
 # ══════════════════════════════════════════════
-# FSM states
+# Состояния FSM
 # ══════════════════════════════════════════════
 
 
@@ -717,24 +709,39 @@ class LoadRecipientsStates(StatesGroup):
 
 
 # ══════════════════════════════════════════════
-# Router & handlers
+# Обработчики команд
 # ══════════════════════════════════════════════
 
 router = Router()
 _pending_clients: dict[int, dict] = {}
 
+STATUS_MAP = {
+    "draft": "черновик",
+    "active": "активна",
+    "paused": "на паузе",
+    "finished": "завершена",
+}
 
-# --- Main menu ---
+
+def status_ru(status: str) -> str:
+    return STATUS_MAP.get(status, status)
+
+
+# --- Главное меню ---
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Accounts", callback_data="menu:accounts"),
-                InlineKeyboardButton(text="Campaigns", callback_data="menu:campaigns"),
+                InlineKeyboardButton(
+                    text="Аккаунты", callback_data="menu:accounts"
+                ),
+                InlineKeyboardButton(
+                    text="Рассылки", callback_data="menu:campaigns"
+                ),
             ],
-            [InlineKeyboardButton(text="Help", callback_data="menu:help")],
+            [InlineKeyboardButton(text="Помощь", callback_data="menu:help")],
         ]
     )
 
@@ -742,8 +749,8 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await message.answer(
-        "Welcome to Crypto Broadcast Bot\n\n"
-        "Manage your accounts and broadcast campaigns from here.",
+        "Добро пожаловать в бот рассылки!\n\n"
+        "Управляй аккаунтами и рассылками отсюда.",
         reply_markup=main_menu_kb(),
     )
 
@@ -751,18 +758,19 @@ async def cmd_start(message: Message) -> None:
 @router.callback_query(lambda c: c.data == "menu:help")
 async def cb_help(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
-        "Commands:\n"
-        "/add_account - Add Telegram account\n"
-        "/list_accounts - List accounts\n"
-        "/remove_account <id> - Remove account\n"
-        "/create_campaign - Create campaign\n"
-        "/list_campaigns - List campaigns\n"
-        "/start_campaign <id> - Start campaign\n"
-        "/stop_campaign <id> - Stop campaign\n"
-        "/campaign_stats <id> - Campaign stats\n"
-        "/export_logs <id> - Export send logs\n"
-        "/edit_campaign <id> - Edit draft campaign\n"
-        "/load_recipients <id> - Load recipients from .txt",
+        "Команды:\n"
+        "/add_account - Добавить аккаунт Telegram\n"
+        "/list_accounts - Список аккаунтов\n"
+        "/remove_account <id> - Удалить аккаунт\n"
+        "/create_campaign - Создать рассылку\n"
+        "/list_campaigns - Список рассылок\n"
+        "/start_campaign <id> - Запустить рассылку\n"
+        "/stop_campaign <id> - Остановить рассылку\n"
+        "/campaign_stats <id> - Статистика рассылки\n"
+        "/export_logs <id> - Экспорт логов в CSV\n"
+        "/edit_campaign <id> - Редактировать рассылку\n"
+        "/load_recipients <id> - Загрузить получателей из файла\n"
+        "/cancel - Отменить текущее действие",
         reply_markup=main_menu_kb(),
     )
     await callback.answer()
@@ -770,11 +778,11 @@ async def cb_help(callback: CallbackQuery) -> None:
 
 @router.callback_query(lambda c: c.data == "menu:main")
 async def cb_main_menu(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("Main menu", reply_markup=main_menu_kb())
+    await callback.message.edit_text("Главное меню", reply_markup=main_menu_kb())
     await callback.answer()
 
 
-# --- Accounts menu ---
+# --- Меню аккаунтов ---
 
 
 @router.callback_query(lambda c: c.data == "menu:accounts")
@@ -782,26 +790,32 @@ async def cb_accounts_menu(callback: CallbackQuery) -> None:
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Add account", callback_data="acc:add"),
-                InlineKeyboardButton(text="List accounts", callback_data="acc:list"),
+                InlineKeyboardButton(
+                    text="Добавить аккаунт", callback_data="acc:add"
+                ),
+                InlineKeyboardButton(
+                    text="Список аккаунтов", callback_data="acc:list"
+                ),
             ],
-            [InlineKeyboardButton(text="Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
         ]
     )
-    await callback.message.edit_text("Accounts management", reply_markup=kb)
+    await callback.message.edit_text("Управление аккаунтами", reply_markup=kb)
     await callback.answer()
 
 
 @router.callback_query(lambda c: c.data == "acc:add")
 async def cb_add_account(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text("Enter api_id:")
+    await callback.message.edit_text(
+        "Введи api_id (получить на https://my.telegram.org):"
+    )
     await state.set_state(AddAccountStates.api_id)
     await callback.answer()
 
 
 @router.message(Command("add_account"))
 async def cmd_add_account(message: Message, state: FSMContext) -> None:
-    await message.answer("Enter api_id:")
+    await message.answer("Введи api_id (получить на https://my.telegram.org):")
     await state.set_state(AddAccountStates.api_id)
 
 
@@ -810,17 +824,17 @@ async def process_api_id(message: Message, state: FSMContext) -> None:
     try:
         api_id = int(message.text.strip())
     except (ValueError, AttributeError):
-        await message.answer("api_id must be a number. Try again:")
+        await message.answer("api_id должен быть числом. Попробуй ещё раз:")
         return
     await state.update_data(api_id=api_id)
-    await message.answer("Enter api_hash:")
+    await message.answer("Введи api_hash:")
     await state.set_state(AddAccountStates.api_hash)
 
 
 @router.message(AddAccountStates.api_hash)
 async def process_api_hash(message: Message, state: FSMContext) -> None:
     await state.update_data(api_hash=message.text.strip())
-    await message.answer("Enter phone number (e.g. +79001234567):")
+    await message.answer("Введи номер телефона (например +79001234567):")
     await state.set_state(AddAccountStates.phone)
 
 
@@ -841,11 +855,11 @@ async def process_phone(message: Message, state: FSMContext) -> None:
             "api_id": data["api_id"],
             "api_hash": data["api_hash"],
         }
-        await message.answer("Code sent. Enter the verification code:")
+        await message.answer("Код отправлен. Введи код подтверждения:")
         await state.set_state(AddAccountStates.code)
     except Exception as exc:
-        logger.error("Failed to send code: %s", exc)
-        await message.answer(f"Error sending code: {exc}")
+        logger.error("Ошибка отправки кода: %s", exc)
+        await message.answer(f"Ошибка отправки кода: {exc}")
         await client.disconnect()
         await state.clear()
 
@@ -854,7 +868,7 @@ async def process_phone(message: Message, state: FSMContext) -> None:
 async def process_code(message: Message, state: FSMContext) -> None:
     info = _pending_clients.get(message.from_user.id)
     if not info:
-        await message.answer("Session expired. Start /add_account again.")
+        await message.answer("Сессия истекла. Начни заново /add_account")
         await state.clear()
         return
 
@@ -868,11 +882,11 @@ async def process_code(message: Message, state: FSMContext) -> None:
     except Exception as exc:
         error_name = type(exc).__name__
         if "SessionPasswordNeeded" in error_name or "password" in str(exc).lower():
-            await message.answer("2FA is enabled. Enter your password:")
+            await message.answer("Включена двухфакторная аутентификация. Введи пароль:")
             await state.set_state(AddAccountStates.password)
             return
-        logger.error("Sign-in failed: %s", exc)
-        await message.answer(f"Sign-in error: {exc}")
+        logger.error("Ошибка входа: %s", exc)
+        await message.answer(f"Ошибка входа: {exc}")
         await client.disconnect()
         _pending_clients.pop(message.from_user.id, None)
         await state.clear()
@@ -885,7 +899,9 @@ async def process_code(message: Message, state: FSMContext) -> None:
     account = await add_account_to_db(
         info["api_id"], info["api_hash"], info["phone"], session_string
     )
-    await message.answer(f"Account added (id={account.id}, phone={account.phone}).")
+    await message.answer(
+        f"Аккаунт добавлен! (id={account.id}, телефон={account.phone})"
+    )
     await state.clear()
 
 
@@ -893,7 +909,7 @@ async def process_code(message: Message, state: FSMContext) -> None:
 async def process_password(message: Message, state: FSMContext) -> None:
     info = _pending_clients.get(message.from_user.id)
     if not info:
-        await message.answer("Session expired. Start /add_account again.")
+        await message.answer("Сессия истекла. Начни заново /add_account")
         await state.clear()
         return
 
@@ -901,8 +917,8 @@ async def process_password(message: Message, state: FSMContext) -> None:
     try:
         await client.sign_in(password=message.text.strip())
     except Exception as exc:
-        logger.error("2FA sign-in failed: %s", exc)
-        await message.answer(f"2FA error: {exc}")
+        logger.error("Ошибка 2FA: %s", exc)
+        await message.answer(f"Ошибка 2FA: {exc}")
         await client.disconnect()
         _pending_clients.pop(message.from_user.id, None)
         await state.clear()
@@ -915,11 +931,13 @@ async def process_password(message: Message, state: FSMContext) -> None:
     account = await add_account_to_db(
         info["api_id"], info["api_hash"], info["phone"], session_string
     )
-    await message.answer(f"Account added (id={account.id}, phone={account.phone}).")
+    await message.answer(
+        f"Аккаунт добавлен! (id={account.id}, телефон={account.phone})"
+    )
     await state.clear()
 
 
-# --- List / remove accounts ---
+# --- Список / удаление аккаунтов ---
 
 
 @router.message(Command("list_accounts"))
@@ -936,16 +954,16 @@ async def cb_list_accounts(callback: CallbackQuery) -> None:
 async def _show_accounts(message: Message, edit: bool = False) -> None:
     accounts = await list_accounts_db()
     if not accounts:
-        text = "No accounts added yet."
+        text = "Аккаунтов пока нет."
     else:
         lines = []
         for a in accounts:
-            status = "active" if a.is_active else "inactive"
+            status = "активен" if a.is_active else "неактивен"
             lines.append(f"[{a.id}] {a.phone} -- {status}")
-        text = "Accounts:\n" + "\n".join(lines)
+        text = "Аккаунты:\n" + "\n".join(lines)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Back", callback_data="menu:accounts")]
+            [InlineKeyboardButton(text="Назад", callback_data="menu:accounts")]
         ]
     )
     if edit:
@@ -958,24 +976,24 @@ async def _show_accounts(message: Message, edit: bool = False) -> None:
 async def cmd_remove_account(message: Message) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /remove_account <id>")
+        await message.answer("Использование: /remove_account <id>")
         return
     try:
         account_id = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Confirm", callback_data=f"acc:rm:{account_id}"
+                    text="Подтвердить", callback_data=f"acc:rm:{account_id}"
                 ),
-                InlineKeyboardButton(text="Cancel", callback_data="menu:accounts"),
+                InlineKeyboardButton(text="Отмена", callback_data="menu:accounts"),
             ],
         ]
     )
-    await message.answer(f"Remove account {account_id}?", reply_markup=kb)
+    await message.answer(f"Удалить аккаунт {account_id}?", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("acc:rm:"))
@@ -983,13 +1001,13 @@ async def cb_confirm_remove(callback: CallbackQuery) -> None:
     account_id = int(callback.data.split(":")[2])
     removed = await remove_account_db(account_id)
     if removed:
-        await callback.message.edit_text(f"Account {account_id} removed.")
+        await callback.message.edit_text(f"Аккаунт {account_id} удален.")
     else:
-        await callback.message.edit_text("Account not found.")
+        await callback.message.edit_text("Аккаунт не найден.")
     await callback.answer()
 
 
-# --- Campaigns menu ---
+# --- Меню рассылок ---
 
 
 @router.callback_query(lambda c: c.data == "menu:campaigns")
@@ -998,32 +1016,32 @@ async def cb_campaigns_menu(callback: CallbackQuery) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Create campaign", callback_data="cmp:create"
+                    text="Создать рассылку", callback_data="cmp:create"
                 ),
                 InlineKeyboardButton(
-                    text="List campaigns", callback_data="cmp:list"
+                    text="Список рассылок", callback_data="cmp:list"
                 ),
             ],
-            [InlineKeyboardButton(text="Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
         ]
     )
-    await callback.message.edit_text("Campaigns management", reply_markup=kb)
+    await callback.message.edit_text("Управление рассылками", reply_markup=kb)
     await callback.answer()
 
 
-# --- Create campaign ---
+# --- Создание рассылки ---
 
 
 @router.callback_query(lambda c: c.data == "cmp:create")
 async def cb_create_campaign(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text("Enter campaign name:")
+    await callback.message.edit_text("Введи название рассылки:")
     await state.set_state(CreateCampaignStates.name)
     await callback.answer()
 
 
 @router.message(Command("create_campaign"))
 async def cmd_create_campaign(message: Message, state: FSMContext) -> None:
-    await message.answer("Enter campaign name:")
+    await message.answer("Введи название рассылки:")
     await state.set_state(CreateCampaignStates.name)
 
 
@@ -1032,12 +1050,14 @@ async def process_campaign_name(message: Message, state: FSMContext) -> None:
     await state.update_data(name=message.text.strip())
     accounts = await list_accounts_db()
     if not accounts:
-        await message.answer("No accounts available. Add accounts first.")
+        await message.answer("Нет доступных аккаунтов. Сначала добавь аккаунт.")
         await state.clear()
         return
     await state.update_data(selected_accounts=[])
     kb = _build_account_select_kb(accounts, [])
-    await message.answer("Select accounts for this campaign:", reply_markup=kb)
+    await message.answer(
+        "Выбери аккаунты для этой рассылки (нажимай для выбора):", reply_markup=kb
+    )
     await state.set_state(CreateCampaignStates.accounts)
 
 
@@ -1054,7 +1074,7 @@ def _build_account_select_kb(
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="Done", callback_data="cmp:sel:done")])
+    rows.append([InlineKeyboardButton(text="Готово", callback_data="cmp:sel:done")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1065,10 +1085,11 @@ async def cb_select_account(callback: CallbackQuery, state: FSMContext) -> None:
         data = await state.get_data()
         selected = data.get("selected_accounts", [])
         if not selected:
-            await callback.answer("Select at least one account.")
+            await callback.answer("Выбери хотя бы один аккаунт.")
             return
         await callback.message.edit_text(
-            "Enter the message text (Markdown supported, emojis allowed):"
+            "Введи текст сообщения для рассылки.\n"
+            "Поддерживается Markdown и любые эмодзи:"
         )
         await state.set_state(CreateCampaignStates.text)
         await callback.answer()
@@ -1092,7 +1113,8 @@ async def cb_select_account(callback: CallbackQuery, state: FSMContext) -> None:
 async def process_campaign_text(message: Message, state: FSMContext) -> None:
     await state.update_data(text=message.text)
     await message.answer(
-        f"Enter interval between messages in seconds (minimum {MIN_INTERVAL_SECONDS}):"
+        f"Введи интервал между сообщениями в секундах "
+        f"(минимум {MIN_INTERVAL_SECONDS}):"
     )
     await state.set_state(CreateCampaignStates.interval)
 
@@ -1102,20 +1124,22 @@ async def process_campaign_interval(message: Message, state: FSMContext) -> None
     try:
         interval = int(message.text.strip())
     except (ValueError, AttributeError):
-        await message.answer("Must be a number. Try again:")
+        await message.answer("Должно быть число. Попробуй ещё раз:")
         return
     if interval < MIN_INTERVAL_SECONDS:
-        await message.answer(f"Minimum interval is {MIN_INTERVAL_SECONDS}s. Try again:")
+        await message.answer(
+            f"Минимальный интервал {MIN_INTERVAL_SECONDS} сек. Попробуй ещё раз:"
+        )
         return
     await state.update_data(interval=interval)
     await message.answer(
-        "Enter recipients (usernames or user IDs).\n\n"
-        "Supported formats:\n"
-        "- comma-separated: user1, user2, user3\n"
-        "- one per line\n"
-        "- with @: @user1 @user2\n"
-        "- links: https://t.me/username\n"
-        "- or send a .txt file with usernames"
+        "Введи получателей (юзернеймы или user ID).\n\n"
+        "Поддерживаемые форматы:\n"
+        "- через запятую: user1, user2, user3\n"
+        "- по одному на строку\n"
+        "- с @: @user1 @user2\n"
+        "- ссылки: https://t.me/username\n"
+        "- или отправь .txt файл с юзернеймами"
     )
     await state.set_state(CreateCampaignStates.recipients)
 
@@ -1133,35 +1157,38 @@ async def process_campaign_recipients(message: Message, state: FSMContext) -> No
                 targets = parse_recipients(content)
         else:
             await message.answer(
-                "Unsupported file type. Send a .txt or .csv file, or enter usernames as text."
+                "Неподдерживаемый тип файла. Отправь .txt или .csv файл, "
+                "или введи юзернеймы текстом."
             )
             return
     elif message.text:
         targets = parse_recipients(message.text)
 
     if not targets:
-        await message.answer("No valid recipients found. Try again:")
+        await message.answer("Не найдено ни одного получателя. Попробуй ещё раз:")
         return
 
     await state.update_data(targets=targets)
     data = await state.get_data()
 
     preview = (
-        f"Campaign: {data['name']}\n"
-        f"Accounts: {len(data['selected_accounts'])}\n"
-        f"Interval: {data['interval']}s\n"
-        f"Recipients: {len(targets)}\n\n"
-        f"Message preview:\n{data['text']}"
+        f"Рассылка: {data['name']}\n"
+        f"Аккаунтов: {len(data['selected_accounts'])}\n"
+        f"Интервал: {data['interval']} сек.\n"
+        f"Получателей: {len(targets)}\n\n"
+        f"Текст сообщения:\n{data['text']}"
     )
 
     if len(targets) <= 20:
-        preview += "\n\nRecipient list:\n" + ", ".join(targets)
+        preview += "\n\nСписок получателей:\n" + ", ".join(targets)
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Confirm", callback_data="cmp:confirm"),
-                InlineKeyboardButton(text="Cancel", callback_data="cmp:cancel"),
+                InlineKeyboardButton(
+                    text="Подтвердить", callback_data="cmp:confirm"
+                ),
+                InlineKeyboardButton(text="Отмена", callback_data="cmp:cancel"),
             ],
         ]
     )
@@ -1180,8 +1207,8 @@ async def cb_confirm_campaign(callback: CallbackQuery, state: FSMContext) -> Non
         targets=data["targets"],
     )
     await callback.message.edit_text(
-        f"Campaign created (id={campaign.id}).\n"
-        f"Use /start_campaign {campaign.id} to launch."
+        f"Рассылка создана (id={campaign.id}).\n"
+        f"Для запуска используй /start_campaign {campaign.id}"
     )
     await state.clear()
     await callback.answer()
@@ -1189,12 +1216,12 @@ async def cb_confirm_campaign(callback: CallbackQuery, state: FSMContext) -> Non
 
 @router.callback_query(CreateCampaignStates.confirm, F.data == "cmp:cancel")
 async def cb_cancel_campaign(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text("Campaign creation cancelled.")
+    await callback.message.edit_text("Создание рассылки отменено.")
     await state.clear()
     await callback.answer()
 
 
-# --- List campaigns ---
+# --- Список рассылок ---
 
 
 @router.message(Command("list_campaigns"))
@@ -1211,13 +1238,15 @@ async def cb_list_campaigns(callback: CallbackQuery) -> None:
 async def _show_campaigns(message: Message, edit: bool = False) -> None:
     campaigns = await list_campaigns_db()
     if not campaigns:
-        text = "No campaigns."
+        text = "Рассылок пока нет."
     else:
-        lines = [f"[{c.id}] {c.name} -- {c.status}" for c in campaigns]
-        text = "Campaigns:\n" + "\n".join(lines)
+        lines = [
+            f"[{c.id}] {c.name} -- {status_ru(c.status)}" for c in campaigns
+        ]
+        text = "Рассылки:\n" + "\n".join(lines)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Back", callback_data="menu:campaigns")]
+            [InlineKeyboardButton(text="Назад", callback_data="menu:campaigns")]
         ]
     )
     if edit:
@@ -1226,37 +1255,39 @@ async def _show_campaigns(message: Message, edit: bool = False) -> None:
         await message.answer(text, reply_markup=kb)
 
 
-# --- Start / stop / stats ---
+# --- Запуск / остановка / статистика ---
 
 
 @router.message(Command("start_campaign"))
 async def cmd_start_campaign(message: Message) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /start_campaign <id>")
+        await message.answer("Использование: /start_campaign <id>")
         return
     try:
         cid = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
 
     campaign = await get_campaign_db(cid)
     if not campaign:
-        await message.answer("Campaign not found.")
+        await message.answer("Рассылка не найдена.")
         return
 
     stats = await campaign_stats_db(cid)
     preview = (
-        f'Start campaign [{cid}] "{campaign.name}"?\n'
-        f"Recipients: {stats['total']} (pending: {stats['pending']})\n\n"
-        f"Message preview:\n{campaign.text}"
+        f'Запустить рассылку [{cid}] "{campaign.name}"?\n'
+        f"Получателей: {stats['total']} (ожидают: {stats['pending']})\n\n"
+        f"Текст сообщения:\n{campaign.text}"
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Start", callback_data=f"cmp:start:{cid}"),
-                InlineKeyboardButton(text="Cancel", callback_data="menu:campaigns"),
+                InlineKeyboardButton(
+                    text="Запустить", callback_data=f"cmp:start:{cid}"
+                ),
+                InlineKeyboardButton(text="Отмена", callback_data="menu:campaigns"),
             ],
         ]
     )
@@ -1268,9 +1299,9 @@ async def cb_start_campaign(callback: CallbackQuery) -> None:
     cid = int(callback.data.split(":")[2])
     err = await start_campaign_action(cid)
     if err:
-        await callback.message.edit_text(f"Error: {err}")
+        await callback.message.edit_text(f"Ошибка: {err}")
     else:
-        await callback.message.edit_text(f"Campaign {cid} started.")
+        await callback.message.edit_text(f"Рассылка {cid} запущена!")
     await callback.answer()
 
 
@@ -1278,119 +1309,123 @@ async def cb_start_campaign(callback: CallbackQuery) -> None:
 async def cmd_stop_campaign(message: Message) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /stop_campaign <id>")
+        await message.answer("Использование: /stop_campaign <id>")
         return
     try:
         cid = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
     err = await stop_campaign_action(cid)
     if err:
-        await message.answer(f"Error: {err}")
+        await message.answer(f"Ошибка: {err}")
     else:
-        await message.answer(f"Campaign {cid} stopped.")
+        await message.answer(f"Рассылка {cid} остановлена.")
 
 
 @router.message(Command("campaign_stats"))
 async def cmd_campaign_stats(message: Message) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /campaign_stats <id>")
+        await message.answer("Использование: /campaign_stats <id>")
         return
     try:
         cid = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
 
     campaign = await get_campaign_db(cid)
     if not campaign:
-        await message.answer("Campaign not found.")
+        await message.answer("Рассылка не найдена.")
         return
 
     stats = await campaign_stats_db(cid)
     text = (
-        f'Campaign [{cid}] "{campaign.name}" ({campaign.status})\n\n'
-        f"Total: {stats['total']}\n"
-        f"Sent: {stats['sent']}\n"
-        f"Errors: {stats['errors']}\n"
-        f"Duplicates: {stats['duplicates']}\n"
-        f"Pending: {stats['pending']}\n"
+        f'Рассылка [{cid}] "{campaign.name}" ({status_ru(campaign.status)})\n\n'
+        f"Всего: {stats['total']}\n"
+        f"Отправлено: {stats['sent']}\n"
+        f"Ошибок: {stats['errors']}\n"
+        f"Дублей: {stats['duplicates']}\n"
+        f"Ожидают: {stats['pending']}\n"
     )
     if stats["recent"]:
-        text += "\nRecent:\n"
+        text += "\nПоследние отправки:\n"
         for r in stats["recent"]:
-            text += f"  {r['target']} at {r['sent_at']}\n"
+            text += f"  {r['target']} в {r['sent_at']}\n"
     await message.answer(text)
 
 
-# --- Export logs ---
+# --- Экспорт логов ---
 
 
 @router.message(Command("export_logs"))
 async def cmd_export_logs(message: Message) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /export_logs <campaign_id>")
+        await message.answer("Использование: /export_logs <id>")
         return
     try:
         cid = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
 
     rows = await export_campaign_logs_db(cid)
     if not rows:
-        await message.answer("No logs for this campaign.")
+        await message.answer("Нет логов для этой рассылки.")
         return
 
     csv_text = export_logs_csv(rows)
     doc = BufferedInputFile(
-        csv_text.encode("utf-8"), filename=f"campaign_{cid}_logs.csv"
+        csv_text.encode("utf-8"), filename=f"rassilka_{cid}_logi.csv"
     )
-    await message.answer_document(doc, caption=f"Logs for campaign {cid}")
+    await message.answer_document(doc, caption=f"Логи рассылки {cid}")
 
 
-# --- Edit campaign ---
+# --- Редактирование рассылки ---
 
 
 @router.message(Command("edit_campaign"))
 async def cmd_edit_campaign(message: Message, state: FSMContext) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /edit_campaign <id>")
+        await message.answer("Использование: /edit_campaign <id>")
         return
     try:
         cid = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
 
     campaign = await get_campaign_db(cid)
     if not campaign:
-        await message.answer("Campaign not found.")
+        await message.answer("Рассылка не найдена.")
         return
     if campaign.status not in ("draft", "paused"):
-        await message.answer("Only draft or paused campaigns can be edited.")
+        await message.answer(
+            "Редактировать можно только черновики или приостановленные рассылки."
+        )
         return
 
     await state.update_data(edit_campaign_id=cid)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Edit text", callback_data="cmp:edit:text"),
                 InlineKeyboardButton(
-                    text="Edit interval", callback_data="cmp:edit:interval"
+                    text="Изменить текст", callback_data="cmp:edit:text"
+                ),
+                InlineKeyboardButton(
+                    text="Изменить интервал", callback_data="cmp:edit:interval"
                 ),
             ],
-            [InlineKeyboardButton(text="Cancel", callback_data="menu:campaigns")],
+            [InlineKeyboardButton(text="Отмена", callback_data="menu:campaigns")],
         ]
     )
     await message.answer(
-        f'Editing campaign [{cid}] "{campaign.name}".\n'
-        f"Current interval: {campaign.interval_seconds}s\n"
-        f"Current text:\n{campaign.text}",
+        f'Редактирование рассылки [{cid}] "{campaign.name}".\n'
+        f"Текущий интервал: {campaign.interval_seconds} сек.\n"
+        f"Текущий текст:\n{campaign.text}",
         reply_markup=kb,
     )
 
@@ -1400,10 +1435,10 @@ async def cb_edit_field(callback: CallbackQuery, state: FSMContext) -> None:
     field = callback.data.split(":")[2]
     await state.update_data(edit_field=field)
     if field == "text":
-        await callback.message.edit_text("Enter new message text:")
+        await callback.message.edit_text("Введи новый текст сообщения:")
     else:
         await callback.message.edit_text(
-            f"Enter new interval in seconds (min {MIN_INTERVAL_SECONDS}):"
+            f"Введи новый интервал в секундах (мин. {MIN_INTERVAL_SECONDS}):"
         )
     await state.set_state(EditCampaignStates.value)
     await callback.answer()
@@ -1419,51 +1454,51 @@ async def process_edit_value(message: Message, state: FSMContext) -> None:
         try:
             val = int(message.text.strip())
         except (ValueError, AttributeError):
-            await message.answer("Must be a number.")
+            await message.answer("Должно быть число.")
             return
         if val < MIN_INTERVAL_SECONDS:
-            await message.answer(f"Minimum is {MIN_INTERVAL_SECONDS}s.")
+            await message.answer(f"Минимум {MIN_INTERVAL_SECONDS} сек.")
             return
         ok = await update_campaign_db(cid, interval_seconds=val)
     else:
         ok = await update_campaign_db(cid, text=message.text)
 
     if ok:
-        await message.answer(f"Campaign {cid} updated.")
+        await message.answer(f"Рассылка {cid} обновлена.")
     else:
-        await message.answer("Update failed (campaign may be active).")
+        await message.answer("Не удалось обновить (рассылка может быть активна).")
     await state.clear()
 
 
-# --- Load recipients from .txt file ---
+# --- Загрузка получателей из файла ---
 
 
 @router.message(Command("load_recipients"))
 async def cmd_load_recipients(message: Message, state: FSMContext) -> None:
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.answer("Usage: /load_recipients <campaign_id>")
+        await message.answer("Использование: /load_recipients <id>")
         return
     try:
         cid = int(parts[1])
     except ValueError:
-        await message.answer("ID must be a number.")
+        await message.answer("ID должен быть числом.")
         return
 
     campaign = await get_campaign_db(cid)
     if not campaign:
-        await message.answer("Campaign not found.")
+        await message.answer("Рассылка не найдена.")
         return
 
     await state.update_data(load_campaign_id=cid)
     await message.answer(
-        f'Send a .txt file with usernames for campaign [{cid}] "{campaign.name}".\n\n'
-        "Supported formats:\n"
-        "- one username per line\n"
-        "- with @: @user1\n"
-        "- links: https://t.me/username\n"
-        "- comma/semicolon separated\n"
-        "- or type them as text"
+        f'Отправь .txt файл с юзернеймами для рассылки [{cid}] "{campaign.name}".\n\n'
+        "Поддерживаемые форматы:\n"
+        "- по одному юзернейму на строку\n"
+        "- с @: @user1\n"
+        "- ссылки: https://t.me/username\n"
+        "- через запятую или точку с запятой\n"
+        "- или просто введи текстом"
     )
     await state.set_state(LoadRecipientsStates.file)
 
@@ -1482,39 +1517,44 @@ async def process_load_recipients_file(message: Message, state: FSMContext) -> N
                 content = file.read().decode("utf-8", errors="replace")
                 targets = parse_recipients(content)
         else:
-            await message.answer("Send a .txt or .csv file, or enter usernames as text.")
+            await message.answer(
+                "Отправь .txt или .csv файл, или введи юзернеймы текстом."
+            )
             return
     elif message.text:
         targets = parse_recipients(message.text)
 
     if not targets:
-        await message.answer("No valid recipients found. Try again or /cancel:")
+        await message.answer(
+            "Не найдено ни одного получателя. Попробуй ещё раз или /cancel"
+        )
         return
 
     added = await add_recipients_to_campaign(cid, targets)
     await message.answer(
-        f"Parsed {len(targets)} usernames, added {added} new recipients "
-        f"to campaign {cid} (duplicates skipped)."
+        f"Распознано юзернеймов: {len(targets)}\n"
+        f"Добавлено новых: {added}\n"
+        f"(дубли пропущены)"
     )
     await state.clear()
 
 
-# --- Cancel ---
+# --- Отмена ---
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Cancelled.", reply_markup=main_menu_kb())
+    await message.answer("Действие отменено.", reply_markup=main_menu_kb())
 
 
 # ══════════════════════════════════════════════
-# Main
+# Запуск бота
 # ══════════════════════════════════════════════
 
 
 async def main() -> None:
-    logger.info("Initializing database...")
+    logger.info("Инициализация базы данных...")
     await init_db()
 
     bot = Bot(
@@ -1528,7 +1568,7 @@ async def main() -> None:
 
     dp.include_router(router)
 
-    logger.info("Bot starting...")
+    logger.info("Бот запускается...")
     await dp.start_polling(bot)
 
 
