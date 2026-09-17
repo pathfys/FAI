@@ -1,0 +1,6 @@
+.env
+*.db
+__pycache__/
+*.pyc
+tunnel.log
+.tunnel_url
