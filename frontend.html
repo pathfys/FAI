@@ -1,0 +1,2291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="api-base" content="">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://telegram.org https://fonts.googleapis.com https://fonts.gstatic.com https://api.coingecko.com https://*.trycloudflare.com; connect-src 'self' https://api.coingecko.com https://*.trycloudflare.com; img-src 'self' data: blob: https://raw.githubusercontent.com; font-src https://fonts.gstatic.com">
+<title>Exchange</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0B0E11;--bg2:#1E2026;--card:#2B3139;
+  --t1:#EAECEF;--t2:#848E9C;
+  --yellow:#F0B90B;--yellow-h:#D4A20A;
+  --green:#0ECB81;--red:#F6465D;
+  --border:#2B3139;
+}
+[data-theme="light"]{
+  --bg:#FAFAFA;--bg2:#F5F5F5;--card:#FFFFFF;
+  --t1:#1E2329;--t2:#707A8A;
+  --border:#EAECEF;
+}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t1);
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;max-width:430px;margin:0 auto}
+input,textarea,select{outline:none;font-family:inherit;font-size:14px}
+input::placeholder,textarea::placeholder{color:var(--t2)}
+button{cursor:pointer;border:none;font-family:inherit;transition:transform .1s}
+button:active{transform:scale(0.96)}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--card);border-radius:2px}
+
+.page{display:none;min-height:100vh;padding-bottom:72px}
+.page.active{display:block;animation:fadeIn .3s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+#splash{display:flex;align-items:center;justify-content:center;flex-direction:column;
+  position:fixed;inset:0;background:var(--bg);z-index:100}
+#splash .splash-logo{opacity:0;transform:scale(.8);animation:splashLogoIn .8s ease forwards}
+@keyframes splashLogoIn{to{opacity:1;transform:scale(1)}}
+
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;max-width:430px;margin:0 auto;
+  background:var(--bg2);border-top:1px solid var(--border);display:flex;
+  justify-content:space-around;align-items:center;height:64px;z-index:50}
+.nav-btn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 16px;
+  background:none;transition:color .2s,filter .2s}
+.nav-btn svg{width:24px;height:24px}
+.nav-btn span{font-size:11px;font-weight:500}
+.nav-btn.active svg{stroke:var(--yellow);filter:drop-shadow(0 0 4px rgba(240,185,11,0.4))}
+.nav-btn.active span{color:var(--yellow)}
+.nav-btn:not(.active) svg{stroke:var(--t2)}
+.nav-btn:not(.active) span{color:var(--t2)}
+
+.wallet-card{margin:0 16px;border-radius:16px;padding:20px;
+  background:linear-gradient(to bottom,var(--card),var(--bg2))}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px}
+.avatar{border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-weight:700;color:var(--bg);background:var(--yellow)}
+
+#balance-amount{cursor:pointer;transition:filter .3s ease;user-select:none}
+#balance-amount.blurred{filter:blur(8px)}
+
+.pnl-row{display:flex;align-items:center;gap:6px;margin-top:2px}
+.pnl-label{color:var(--t2);font-size:12px}
+.pnl-value{font-size:12px;font-weight:600}
+.pnl-value.up{color:var(--green)}
+.pnl-value.down{color:var(--red)}
+
+.banner-wrap{margin:16px;position:relative;overflow:hidden;border-radius:16px;aspect-ratio:2.2/1}
+.banner{position:absolute;inset:0;padding:0;display:flex;align-items:center;justify-content:center;
+  border-radius:16px;transition:transform .35s ease,opacity .35s ease;cursor:pointer;overflow:hidden}
+.banner.hide-left{transform:translateX(-100%);opacity:0}
+.banner.hide-right{transform:translateX(100%);opacity:0}
+.banner.visible{transform:translateX(0);opacity:1}
+.banner:active{transform:scale(0.97)!important}
+.banner img{width:100%;height:100%;object-fit:cover;border-radius:16px;pointer-events:none}
+.dots{display:flex;justify-content:center;gap:6px;margin-top:12px}
+.dot{width:6px;height:6px;border-radius:3px;background:var(--card);transition:all .3s;cursor:pointer}
+.dot.active{width:16px;background:var(--yellow)}
+
+.order-card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:12px}
+.toggle-row{display:flex;margin:12px 16px 0;background:var(--card);border-radius:8px;overflow:hidden}
+.toggle-btn{flex:1;padding:12px;text-align:center;font-size:14px;font-weight:600;
+  background:none;color:var(--t2);transition:all .2s}
+.toggle-btn.active-buy{background:var(--green);color:#fff}
+.toggle-btn.active-sell{background:var(--red);color:#fff}
+.toggle-btn.active-yellow{background:var(--yellow);color:var(--bg)}
+
+.filter-row{display:flex;gap:8px;margin:12px 16px 0}
+.filter-row select{flex:1;background:var(--card);color:var(--t1);border:1px solid var(--border);
+  border-radius:8px;padding:8px 12px}
+
+.form-group{margin-bottom:16px}
+.form-group label{display:block;color:var(--t2);font-size:13px;margin-bottom:4px}
+.form-group input,.form-group select,.form-group textarea{width:100%;background:var(--card);
+  color:var(--t1);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.form-group textarea{resize:none;height:80px}
+
+.btn-primary{width:100%;padding:12px;background:var(--yellow);color:var(--bg);border-radius:8px;
+  font-size:14px;font-weight:600;transition:background .2s,transform .1s}
+.btn-primary:hover{background:var(--yellow-h)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{padding:10px 20px;background:none;border:1px solid var(--yellow);color:var(--yellow);
+  border-radius:8px;font-size:14px;font-weight:500;transition:all .2s}
+.btn-outline:hover{background:var(--yellow);color:var(--bg)}
+.btn-green{background:var(--green);color:#fff;border-radius:8px;padding:12px;font-weight:600;font-size:14px}
+.btn-red-o{background:var(--card);color:var(--red);border:1px solid var(--red);border-radius:8px;
+  padding:12px;font-weight:600;font-size:14px}
+
+.badge{display:inline-block;padding:2px 12px;border-radius:20px;font-size:11px;font-weight:500}
+.badge-pending{background:rgba(240,185,11,.2);color:var(--yellow)}
+.badge-awaiting_payment{background:rgba(240,185,11,.2);color:var(--yellow)}
+.badge-paid{background:rgba(59,130,246,.2);color:#60a5fa}
+.badge-payment_confirmed{background:rgba(14,203,129,.2);color:var(--green)}
+.badge-goods_sent{background:rgba(249,115,22,.2);color:#fb923c}
+.badge-completed{background:rgba(14,203,129,.2);color:var(--green)}
+.badge-cancelled{background:rgba(246,70,93,.2);color:var(--red)}
+.badge-disputed{background:rgba(249,115,22,.2);color:#fb923c}
+
+.section-title{color:var(--t1);font-size:15px;font-weight:600;margin:24px 16px 12px}
+.empty{color:var(--t2);font-size:14px;text-align:center;padding:32px 0}
+.deal-info{background:var(--card);border-radius:12px;padding:16px;margin-bottom:16px}
+.deal-info .row{display:flex;justify-content:space-between;margin-bottom:8px}
+.deal-info .row .label{color:var(--t2);font-size:13px}
+.deal-info .row .value{color:var(--t1);font-size:14px;font-weight:500}
+
+.timer-box{background:rgba(240,185,11,.1);border:1px solid rgba(240,185,11,.3);
+  border-radius:12px;padding:12px;text-align:center;margin-bottom:16px}
+.timer-box .label{color:var(--t2);font-size:12px}
+.timer-box .time{color:var(--yellow);font-size:28px;font-weight:700}
+
+.chat-box{background:var(--card);border-radius:12px;overflow:hidden;margin-bottom:16px}
+.chat-header{padding:8px 16px;border-bottom:1px solid var(--border);font-size:14px;font-weight:500}
+.chat-messages{height:200px;overflow-y:auto;padding:12px}
+.chat-msg{max-width:75%;margin-bottom:8px;padding:8px 12px;border-radius:12px;font-size:14px;word-break:break-word}
+.chat-msg.mine{margin-left:auto;background:var(--yellow);color:var(--bg);border-bottom-right-radius:4px}
+.chat-msg.other{background:var(--bg2);color:var(--t1);border-bottom-left-radius:4px}
+.chat-msg .sender{font-size:11px;color:var(--t2);margin-bottom:2px}
+.chat-msg .time{font-size:10px;margin-top:2px;opacity:.6}
+.chat-input{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border)}
+.chat-input input{flex:1;background:var(--bg2);color:var(--t1);border:none;border-radius:8px;padding:8px 12px}
+.chat-input button{background:var(--yellow);color:var(--bg);border-radius:8px;padding:8px 16px;
+  font-size:13px;font-weight:600}
+
+.back-btn{background:none;color:var(--t2);padding:8px}
+.back-btn svg{width:24px;height:24px;stroke:currentColor;stroke-width:2}
+.page-header{display:flex;align-items:center;gap:12px;padding:12px 16px}
+.page-header h1{font-size:18px;font-weight:600;color:var(--t1)}
+
+.lang-switch{display:flex;background:var(--card);border-radius:8px;overflow:hidden}
+.lang-btn{padding:8px 16px;font-size:14px;font-weight:500;background:none;color:var(--t2);transition:all .2s}
+.lang-btn.active{background:var(--yellow);color:var(--bg)}
+
+.profile-card{background:var(--card);border-radius:12px;padding:20px;display:flex;
+  flex-direction:column;align-items:center;margin:0 16px 16px}
+
+.crypto-icons{display:flex;gap:12px;margin-bottom:20px}
+.crypto-icon{display:flex;align-items:center;gap:4px}
+.crypto-icon .sym{color:var(--yellow);font-size:14px;display:flex;align-items:center}
+.crypto-icon .sym img{width:20px;height:20px;border-radius:50%;object-fit:cover;background:rgba(255,255,255,0.08)}
+.crypto-icon .name{color:var(--t2);font-size:12px}
+
+.pay-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.pay-badge{padding:2px 8px;background:var(--bg2);border-radius:4px;font-size:12px;color:var(--t2)}
+
+.txn-row{background:var(--card);border-radius:12px;padding:12px;display:flex;align-items:center;
+  justify-content:space-between;margin-bottom:8px;cursor:pointer;transition:transform .1s}
+.txn-row:active{transform:scale(0.97)}
+.txn-left{display:flex;align-items:center;gap:12px}
+.txn-icon{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:14px}
+.txn-icon.buy{background:rgba(14,203,129,.2);color:var(--green)}
+.txn-icon.sell{background:rgba(246,70,93,.2);color:var(--red)}
+
+.market-card{background:var(--card);border-radius:12px;padding:12px 16px;margin-bottom:8px;
+  display:flex;align-items:center;gap:12px}
+.market-icon{width:32px;height:32px;border-radius:50%;object-fit:cover;background:rgba(255,255,255,0.08)}
+.market-info{flex:1;min-width:0}
+.market-name{font-size:14px;font-weight:600;color:var(--t1)}
+.market-sym{font-size:12px;color:var(--t2)}
+.market-right{display:flex;align-items:center;gap:8px}
+.market-price{font-size:13px;font-weight:600;color:var(--t1)}
+.market-change{font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;margin-top:2px}
+.market-change.up{color:var(--green);background:rgba(14,203,129,.15)}
+.market-change.down{color:var(--red);background:rgba(246,70,93,.15)}
+
+.create-deal-btn{display:flex;align-items:center;justify-content:center;gap:8px;
+  margin:16px;padding:14px;background:var(--yellow);color:var(--bg);border-radius:12px;
+  font-size:15px;font-weight:700;box-shadow:0 4px 16px rgba(240,185,11,.25)}
+.create-deal-btn:hover{background:var(--yellow-h)}
+.create-deal-btn svg{width:20px;height:20px;stroke:var(--bg);stroke-width:2.5}
+
+/* Stats Grid */
+.stats-grid-wrap{background:var(--card);border-radius:12px;padding:16px;margin:0 16px 16px}
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat-mini{background:var(--bg2);border-radius:10px;padding:14px 10px;text-align:center}
+.stat-mini .stat-val{font-size:20px;font-weight:700;color:var(--yellow)}
+.stat-mini .stat-label{font-size:11px;color:var(--t2);margin-top:4px}
+
+/* Profile Extras */
+.prof-block{padding:0 16px;margin-bottom:16px}
+.prof-setting-card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:12px;
+  display:flex;align-items:center;gap:8px}
+.prof-setting-lbl{color:var(--t2);font-size:14px}
+
+.success-card{background:var(--card);border-radius:12px;padding:20px;display:flex;align-items:center;gap:20px}
+.success-ring-wrap{position:relative;flex-shrink:0}
+.success-pct{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:22px;font-weight:700;color:var(--green)}
+.success-info{flex:1}
+.success-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--t2);margin-bottom:8px}
+.success-row:last-child{margin-bottom:0}
+.success-row b{color:var(--t1);margin-left:auto}
+.sdot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+.activity-card{background:var(--card);border-radius:12px;padding:16px}
+.activity-sub{font-size:12px;color:var(--t2);margin-bottom:12px}
+.activity-bars{display:flex;align-items:flex-end;gap:3px;height:80px}
+.activity-bar{flex:1;border-radius:2px 2px 0 0;min-height:2px;transition:height .5s ease}
+
+.notif-list{background:var(--card);border-radius:12px;overflow:hidden}
+.notif-item{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;
+  border-bottom:1px solid var(--border)}
+.notif-item:last-child{border-bottom:none}
+.notif-item span{font-size:14px;color:var(--t1)}
+.notif-toggle{position:relative;width:44px;height:24px;background:var(--card);border:1px solid var(--border);
+  border-radius:12px;cursor:pointer;transition:all .3s;flex-shrink:0}
+.notif-toggle.on{background:var(--green);border-color:var(--green)}
+.notif-toggle .knob{position:absolute;top:1px;left:1px;width:20px;height:20px;
+  background:#fff;border-radius:50%;transition:transform .3s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.notif-toggle.on .knob{transform:translateX(20px)}
+
+/* UID Badge */
+.uid-badge{display:inline-flex;align-items:center;gap:6px;background:var(--bg2);
+  border:1px solid var(--border);border-radius:8px;padding:6px 14px;margin-top:8px;cursor:pointer;transition:all .2s}
+.uid-badge:active{transform:scale(0.96)}
+.uid-badge .uid-label{font-size:11px;color:var(--t2);font-weight:500}
+.uid-badge .uid-value{font-size:13px;color:var(--yellow);font-weight:700;font-family:'Inter',monospace;letter-spacing:0.5px}
+.uid-badge .uid-copy{width:14px;height:14px;stroke:var(--t2);flex-shrink:0}
+.user-status-badge{display:inline-flex;align-items:center;gap:6px;margin-top:8px;
+  padding:5px 14px;border-radius:20px;font-size:12px;font-weight:600;letter-spacing:.3px}
+.user-status-badge.beginner{background:rgba(132,142,156,.15);color:#848E9C;border:1px solid rgba(132,142,156,.25)}
+.user-status-badge.merchant{background:rgba(240,185,11,.1);color:var(--yellow);border:1px solid rgba(240,185,11,.3)}
+.status-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.user-status-badge.beginner .status-dot{background:#848E9C}
+.user-status-badge.merchant .status-dot{background:var(--yellow);box-shadow:0 0 6px rgba(240,185,11,.5)}
+
+/* ═══ WALLET PAGE ═══ */
+.wallet-hero{display:flex;flex-direction:column;align-items:center;padding:24px 16px 8px}
+.coin-3d-wrap{perspective:800px;margin-bottom:20px;cursor:grab}
+.coin-3d-wrap:active{cursor:grabbing}
+.coin-3d{
+  width:100px;height:100px;border-radius:50%;
+  background:transparent;
+  display:flex;align-items:center;justify-content:center;
+  transform-style:preserve-3d;
+  animation:coinFloat 4s ease-in-out infinite;
+  box-shadow:0 8px 32px rgba(240,185,11,0.35),0 0 60px rgba(240,185,11,0.12);
+  transition:transform .15s ease-out;
+  position:relative;overflow:hidden;
+}
+.coin-3d img{width:100%;height:100%;border-radius:50%;object-fit:cover}
+.coin-3d.interacting{animation:none}
+@keyframes coinFloat{
+  0%,100%{transform:translateY(0) rotateY(0deg) rotateX(5deg)}
+  25%{transform:translateY(-10px) rotateY(15deg) rotateX(0deg)}
+  50%{transform:translateY(-16px) rotateY(0deg) rotateX(-5deg)}
+  75%{transform:translateY(-10px) rotateY(-15deg) rotateX(0deg)}
+}
+
+.bind-wallet-btn{display:flex;align-items:center;justify-content:center;gap:10px;
+  margin:0 auto 20px;padding:14px 24px;background:var(--yellow);color:var(--bg);border-radius:12px;
+  font-size:15px;font-weight:700;box-shadow:0 4px 16px rgba(240,185,11,.25);
+  width:auto;min-width:0}
+.bind-wallet-btn:hover{background:var(--yellow-h)}
+.bind-wallet-btn img{width:22px;height:22px;border-radius:50%}
+.wallet-sections{display:none}
+.wallet-sections.visible{display:block}
+
+/* ═══ CREATE ORDER WIZARD ═══ */
+.co-steps-ind{display:flex;gap:6px;margin-left:auto}
+.co-dot{width:8px;height:8px;border-radius:50%;background:var(--card);transition:background .3s}
+.co-dot.active{background:var(--yellow)}
+.co-dot.done{background:var(--green)}
+
+.co-step{padding:0 16px;display:none}
+.co-step.active{display:block;animation:fadeIn .3s ease}
+.co-step-q{font-size:18px;font-weight:600;color:var(--t1);text-align:center;padding:32px 0 24px;line-height:1.4}
+
+.co-role-btns{display:flex;gap:12px}
+.co-role-btn{flex:1;background:var(--card);border-radius:16px;padding:32px 16px;
+  display:flex;flex-direction:column;align-items:center;gap:16px;border:2px solid transparent;transition:all .2s}
+.co-role-btn:active{border-color:var(--yellow)}
+.co-role-ico{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px}
+.co-role-ico.buy{background:rgba(14,203,129,.15);color:var(--green)}
+.co-role-ico.sell{background:rgba(246,70,93,.15);color:var(--red)}
+.co-role-btn span{font-size:16px;font-weight:600;color:var(--t1)}
+
+.co-tabs{display:flex;gap:8px;margin-bottom:16px}
+.co-tab{flex:1;padding:10px;background:var(--card);color:var(--t2);border-radius:10px;
+  font-size:14px;font-weight:600;transition:all .2s}
+.co-tab.active{background:var(--yellow);color:var(--bg)}
+
+.co-cur-item{display:flex;align-items:center;gap:12px;padding:14px;background:var(--card);
+  border-radius:12px;margin-bottom:8px;cursor:pointer;transition:all .15s;border:2px solid transparent}
+.co-cur-item:active{transform:scale(0.98)}
+.co-cur-item.selected{border-color:var(--yellow)}
+.co-cur-icon{width:36px;height:36px;border-radius:50%;object-fit:cover;background:rgba(255,255,255,0.08)}
+.co-cur-flag{width:36px;height:36px;border-radius:50%;background:var(--bg2);
+  display:flex;align-items:center;justify-content:center;font-size:20px}
+.co-cur-info{flex:1}
+.co-cur-name{font-size:14px;font-weight:600;color:var(--t1)}
+.co-cur-sym{font-size:12px;color:var(--t2)}
+.co-cur-bal{text-align:right}
+.co-cur-bal-val{font-size:13px;font-weight:500;color:var(--t1)}
+.co-cur-bal-usd{font-size:11px;color:var(--t2)}
+
+.co-bal-card{background:linear-gradient(135deg,#1E2026 0%,#2B3139 100%);
+  border-radius:16px;padding:20px;margin-bottom:16px;text-align:center}
+.co-bal-card .lbl{font-size:12px;color:var(--t2);margin-bottom:4px}
+.co-bal-card .amt{font-size:28px;font-weight:700;color:var(--t1)}
+
+.co-link-input{width:100%;background:var(--card);color:var(--t1);border:1px solid var(--border);
+  border-radius:10px;padding:12px 14px;margin-bottom:8px;font-size:14px}
+.co-link-input:focus{border-color:var(--yellow)}
+.co-add-link{background:none;color:var(--yellow);font-size:14px;font-weight:600;padding:8px 0;margin-bottom:16px}
+.co-next-btn{width:100%;margin-top:8px}
+
+.co-amt-wrap{position:relative;margin-bottom:16px}
+.co-amt-input{width:100%;background:var(--card);color:var(--t1);border:1px solid var(--border);
+  border-radius:12px;padding:16px 60px 16px 16px;font-size:24px;font-weight:700;text-align:center}
+.co-amt-input:focus{border-color:var(--yellow)}
+.co-amt-cur{position:absolute;right:16px;top:50%;transform:translateY(-50%);
+  color:var(--t2);font-size:14px;font-weight:600}
+
+.co-confirm-warn{font-size:16px;font-weight:600;color:var(--yellow);text-align:center;
+  padding:24px 0 20px;line-height:1.4}
+.co-confirm-data{background:var(--card);border-radius:12px;padding:16px;margin-bottom:20px}
+.co-confirm-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+.co-confirm-row:last-child{border-bottom:none}
+.co-confirm-row .lbl{color:var(--t2);font-size:13px}
+.co-confirm-row .val{color:var(--t1);font-size:14px;font-weight:500;text-align:right;max-width:60%;word-break:break-all}
+
+.co-confirm-btns{display:flex;gap:12px;margin-bottom:12px}
+.co-cfm-btn{flex:1;padding:14px;border-radius:12px;font-size:15px;font-weight:700;transition:all .3s}
+.co-cfm-btn.ok{background:var(--green);color:#fff}
+.co-cfm-btn.no{background:var(--card);color:var(--red);border:1px solid var(--red)}
+.co-cfm-btn.disabled{opacity:0.4;pointer-events:none}
+.co-timer-txt{text-align:center;color:var(--t2);font-size:13px}
+
+.co-success{display:flex;flex-direction:column;align-items:center;padding:60px 16px;gap:20px}
+.co-success-check{width:80px;height:80px;border-radius:50%;background:var(--green);
+  display:flex;align-items:center;justify-content:center;box-shadow:0 8px 32px rgba(14,203,129,0.35)}
+.co-success-check svg{width:40px;height:40px;fill:#fff}
+.co-success-title{font-size:20px;font-weight:700;color:var(--t1);text-align:center}
+.co-success-msg{font-size:14px;color:var(--t2);text-align:center;line-height:1.5}
+
+/* Participant ID input */
+.co-uid-wrap{max-width:320px;margin:0 auto}
+.co-uid-input{width:100%;background:var(--card);color:var(--t1);border:2px solid var(--border);
+  border-radius:14px;padding:18px 16px;font-size:22px;font-weight:700;text-align:center;
+  font-family:'Inter',monospace;letter-spacing:2px;transition:border-color .2s}
+.co-uid-input:focus{border-color:var(--yellow)}
+.co-uid-input.valid{border-color:var(--green)}
+.co-uid-input.invalid{border-color:var(--red)}
+.co-uid-status{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:16px;
+  min-height:44px;padding:10px 16px;border-radius:10px;font-size:14px;font-weight:500;transition:all .3s}
+.co-uid-status.found{background:rgba(14,203,129,.1);color:var(--green)}
+.co-uid-status.notfound{background:rgba(246,70,93,.1);color:var(--red)}
+.co-uid-status .uid-user-info{display:flex;align-items:center;gap:8px}
+.co-uid-status .uid-user-avatar{width:28px;height:28px;border-radius:50%;background:var(--yellow);
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--bg)}
+
+/* ═══ ESCROW DEAL FLOW ═══ */
+.escrow-stepper{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 16px 8px;position:relative}
+.escrow-step{display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;z-index:2;flex:0 0 auto;width:60px}
+.escrow-circle{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:700;border:2px solid var(--border);color:var(--t2);background:var(--bg);transition:all .4s}
+.escrow-circle.active{border-color:var(--yellow);color:var(--yellow);
+  box-shadow:0 0 0 4px rgba(240,185,11,.15);animation:escrowPulse 2s ease-in-out infinite}
+.escrow-circle.done{border-color:var(--green);background:var(--green);color:#fff}
+.escrow-step-label{font-size:9px;color:var(--t2);text-align:center;line-height:1.2;max-width:64px;font-weight:500}
+.escrow-step-label.active{color:var(--yellow);font-weight:600}
+.escrow-step-label.done{color:var(--green)}
+@keyframes escrowPulse{0%,100%{box-shadow:0 0 0 4px rgba(240,185,11,.15)}50%{box-shadow:0 0 0 8px rgba(240,185,11,.08)}}
+
+.escrow-lines{position:absolute;top:38px;left:46px;right:46px;height:2px;display:flex;z-index:1}
+.escrow-line{flex:1;height:2px;background:var(--border);transition:background .4s}
+.escrow-line.done{background:var(--green)}
+.escrow-line.active{background:linear-gradient(90deg,var(--green),var(--yellow))}
+
+.escrow-detail{margin:0 16px 16px;background:var(--card);border-radius:16px;overflow:hidden}
+.escrow-detail-header{padding:16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border)}
+.escrow-detail-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;
+  justify-content:center;font-size:22px;flex-shrink:0}
+.escrow-detail-icon.step1{background:rgba(240,185,11,.15)}
+.escrow-detail-icon.step2{background:rgba(59,130,246,.15)}
+.escrow-detail-icon.step3{background:rgba(249,115,22,.15)}
+.escrow-detail-icon.step4{background:rgba(14,203,129,.15)}
+.escrow-detail-title{font-size:16px;font-weight:700;color:var(--t1)}
+.escrow-detail-sub{font-size:12px;color:var(--t2);margin-top:2px}
+.escrow-detail-body{padding:16px}
+.escrow-detail-desc{font-size:14px;color:var(--t2);line-height:1.6;margin-bottom:16px}
+.escrow-detail-desc strong{color:var(--t1);font-weight:600}
+.escrow-action-btn{width:100%;padding:14px;border-radius:12px;font-size:15px;font-weight:700;
+  margin-bottom:8px;transition:all .2s}
+.escrow-action-btn.primary{background:var(--green);color:#fff}
+.escrow-action-btn.primary:hover{background:#0bb874}
+.escrow-action-btn.danger{background:none;border:1px solid var(--red);color:var(--red)}
+.escrow-action-btn.danger:hover{background:rgba(246,70,93,.1)}
+.escrow-waiting{display:flex;align-items:center;gap:10px;padding:14px;background:var(--bg2);
+  border-radius:12px;margin-bottom:8px}
+.escrow-waiting-dot{width:8px;height:8px;border-radius:50%;background:var(--yellow);
+  animation:waitingBlink 1.5s ease-in-out infinite}
+@keyframes waitingBlink{0%,100%{opacity:.3}50%{opacity:1}}
+.escrow-waiting-text{font-size:13px;color:var(--t2);line-height:1.4}
+.escrow-done-card{text-align:center;padding:24px 16px}
+.escrow-done-check{width:56px;height:56px;border-radius:50%;background:var(--green);
+  display:flex;align-items:center;justify-content:center;margin:0 auto 16px;
+  box-shadow:0 8px 24px rgba(14,203,129,.3)}
+.escrow-done-check svg{width:28px;height:28px;fill:#fff}
+.escrow-done-title{font-size:18px;font-weight:700;color:var(--green);margin-bottom:4px}
+.escrow-done-msg{font-size:13px;color:var(--t2)}
+
+.wcrypto-card{background:var(--card);border-radius:12px;margin:0 16px 8px;overflow:hidden;
+  transition:transform .1s}
+.wcrypto-card:active{transform:scale(0.98)}
+.wcrypto-header{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer}
+.wcrypto-icon{width:36px;height:36px;border-radius:50%;object-fit:cover;
+  background:rgba(255,255,255,0.08);flex-shrink:0}
+.wcrypto-info{flex:1;min-width:0}
+.wcrypto-name{font-size:14px;font-weight:600;color:var(--t1)}
+.wcrypto-sym{font-size:12px;color:var(--t2)}
+.wcrypto-bal{text-align:right}
+.wcrypto-bal .amt{font-size:14px;font-weight:600;color:var(--t1)}
+.wcrypto-bal .usd{font-size:11px;color:var(--t2)}
+.wcrypto-chevron{color:var(--t2);transition:transform .2s;flex-shrink:0}
+.wcrypto-chevron.open{transform:rotate(180deg)}
+.wcrypto-expand{padding:0 16px 14px;display:none}
+.wcrypto-expand.open{display:block}
+.wcrypto-input-row{display:flex;gap:8px}
+.wcrypto-input-row input{flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--border);
+  border-radius:8px;padding:9px 12px;font-size:12px;font-family:'Inter',monospace;transition:border-color .2s}
+.wcrypto-input-row input.valid{border-color:var(--green)}
+.wcrypto-input-row input.invalid{border-color:var(--red)}
+.wcrypto-input-row button{background:var(--yellow);color:var(--bg);border-radius:8px;
+  padding:0 14px;font-size:12px;font-weight:600;white-space:nowrap}
+.wcrypto-status{font-size:11px;margin-top:4px;min-height:14px}
+.wcrypto-status.ok{color:var(--green)}
+.wcrypto-status.err{color:var(--red)}
+.wcrypto-saved{display:flex;align-items:center;gap:8px;background:var(--bg2);border-radius:8px;
+  padding:9px 12px;font-size:12px;font-family:'Inter',monospace;color:var(--t1)}
+.wcrypto-saved .addr{flex:1;overflow:hidden;text-overflow:ellipsis}
+.wcrypto-saved button{background:none;color:var(--yellow);font-size:11px;font-weight:600;padding:2px 6px}
+
+.wfiat-card{background:var(--card);border-radius:12px;padding:14px 16px;margin:0 16px 8px;
+  display:flex;align-items:center;gap:12px}
+.wfiat-flag{font-size:24px;width:36px;text-align:center;flex-shrink:0}
+.wfiat-info{flex:1}
+.wfiat-name{font-size:14px;font-weight:600;color:var(--t1)}
+.wfiat-sym{font-size:12px;color:var(--t2)}
+.wfiat-bal{font-size:14px;font-weight:600;color:var(--t1)}
+
+/* ═══ TOAST NOTIFICATION ═══ */
+.toast-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;
+  align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .25s}
+.toast-overlay.visible{opacity:1;pointer-events:auto}
+.toast-box{background:var(--card);border-radius:20px;padding:32px 28px;text-align:center;
+  max-width:300px;width:90%;transform:scale(.85);transition:transform .25s;box-shadow:0 16px 48px rgba(0,0,0,.4)}
+.toast-overlay.visible .toast-box{transform:scale(1)}
+.toast-circle{width:64px;height:64px;border-radius:50%;margin:0 auto 16px;display:flex;
+  align-items:center;justify-content:center}
+.toast-circle.error{background:#F6465D}
+.toast-circle.success{background:#0ECB81}
+.toast-circle svg{width:28px;height:28px;stroke:#fff;stroke-width:3;fill:none;stroke-linecap:round}
+.toast-title{font-size:16px;font-weight:700;color:var(--t1);margin-bottom:8px}
+.toast-msg{font-size:13px;color:var(--t2);line-height:1.4}
+.toast-btn{margin-top:20px;padding:10px 32px;border-radius:8px;font-size:14px;font-weight:600;
+  background:var(--yellow);color:#0B0E11;cursor:pointer;border:none}
+
+/* ═══ DEPOSIT/WITHDRAW MODAL ═══ */
+.dw-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;
+  align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .25s}
+.dw-modal-overlay.visible{opacity:1;pointer-events:auto}
+.dw-modal{background:var(--bg);border-radius:20px 20px 0 0;width:100%;max-width:480px;
+  max-height:75vh;overflow-y:auto;padding:20px 16px 32px;transform:translateY(100%);transition:transform .3s ease}
+.dw-modal-overlay.visible .dw-modal{transform:translateY(0)}
+.dw-modal-handle{width:40px;height:4px;border-radius:2px;background:var(--border);margin:0 auto 16px}
+.dw-modal-title{font-size:18px;font-weight:700;color:var(--t1);text-align:center;margin-bottom:16px}
+.dw-section-title{font-size:13px;font-weight:600;color:var(--t2);margin:12px 0 8px;padding-left:4px}
+.dw-item{display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--card);
+  border-radius:12px;margin-bottom:8px;cursor:pointer;transition:background .2s}
+.dw-item:active{background:var(--bg2)}
+.dw-item-icon{width:36px;height:36px;border-radius:50%;object-fit:contain;flex-shrink:0}
+.dw-item-icon-fb{width:36px;height:36px;border-radius:50%;background:var(--bg2);
+  display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.dw-item-info{flex:1}
+.dw-item-name{font-size:14px;font-weight:600;color:var(--t1)}
+.dw-item-sym{font-size:12px;color:var(--t2)}
+.dw-item-arrow{color:var(--t2)}
+</style>
+</head>
+<body>
+
+<!-- SPLASH -->
+<div id="splash">
+  <div class="splash-logo">
+    <img src="https://raw.githubusercontent.com/pathfys/bmark/main/assets/Binance-welcome%20screen.png" alt="Logo" width="160"
+         style="border-radius:0" onerror="this.style.display='none'">
+  </div>
+</div>
+
+<!-- HOME -->
+<div id="page-home" class="page">
+  <div class="topbar">
+    <div style="display:flex;align-items:center;gap:12px">
+      <img src="https://raw.githubusercontent.com/pathfys/bmark/main/assets/binance.png" alt="Logo" style="height:28px;width:auto" id="home-logo">
+    </div>
+    <button style="background:none;padding:8px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#848E9C" stroke-width="2" stroke-linecap="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="wallet-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <span style="color:var(--t2);font-size:13px" id="lbl-balance">Estimated Balance</span>
+      <button onclick="toggleBalance()" style="background:none;padding:4px" id="eye-btn"></button>
+    </div>
+    <div>
+      <span style="font-size:28px;font-weight:700" id="balance-amount" onclick="toggleBalance()"></span>
+    </div>
+    <div class="pnl-row" id="pnl-row">
+      <span class="pnl-label" id="pnl-label">PnL Today</span>
+      <span class="pnl-value up" id="pnl-value">+$0.00</span>
+      <span class="pnl-value up" id="pnl-pct">+0.00%</span>
+    </div>
+    <div style="margin-top:14px"></div>
+    <div class="crypto-icons" id="crypto-icons-row"></div>
+    <div style="display:flex;gap:12px">
+      <button class="btn-outline" style="flex:1" id="btn-deposit">Deposit</button>
+      <button class="btn-outline" style="flex:1" id="btn-withdraw">Withdraw</button>
+    </div>
+  </div>
+
+  <button class="create-deal-btn" onclick="showPage('create-order')" id="btn-create-deal">
+    <svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+    </svg>
+    <span id="lbl-create-deal">Create Deal</span>
+  </button>
+
+  <div class="banner-wrap" id="banner-container"></div>
+  <div class="dots" id="banner-dots"></div>
+
+  <div class="section-title" id="lbl-markets">Markets</div>
+  <div style="padding:0 16px" id="markets-list"></div>
+
+</div>
+
+<!-- WALLET -->
+<div id="page-wallet" class="page">
+  <div class="page-header"><h1 id="lbl-wallet-title">Wallet</h1></div>
+
+  <div class="wallet-hero">
+    <div class="coin-3d-wrap" id="coin3d-wrap">
+      <div class="coin-3d" id="coin3d">
+        <img src="https://raw.githubusercontent.com/pathfys/bmark/main/assets/bnb-bnb-logo.png" alt="BNB">
+      </div>
+    </div>
+    <div style="font-size:22px;font-weight:700;color:var(--t1)" id="wallet-total">$0.00</div>
+    <div style="color:var(--t2);font-size:13px;margin-top:4px" id="wallet-total-lbl">Total Balance</div>
+  </div>
+
+  <button class="bind-wallet-btn" id="bind-wallet-btn" onclick="toggleWalletSections()">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    <span id="bind-wallet-lbl">Bind Wallet</span>
+  </button>
+
+  <div class="wallet-sections" id="wallet-sections">
+    <div class="section-title" id="lbl-crypto-cur">Cryptocurrencies</div>
+    <div id="wallet-crypto-list"></div>
+
+    <div class="section-title" id="lbl-fiat-cur">Fiat Currencies</div>
+    <div id="wallet-fiat-list"></div>
+  </div>
+</div>
+
+<!-- CREATE ORDER -->
+<div id="page-create-order" class="page">
+  <div class="page-header">
+    <button class="back-btn" onclick="coBack()"><svg viewBox="0 0 24 24" fill="none"><polyline points="15,18 9,12 15,6"/></svg></button>
+    <h1 id="lbl-create-order">Create Order</h1>
+    <div class="co-steps-ind" id="co-dots"></div>
+  </div>
+
+  <!-- Step 1: Role -->
+  <div class="co-step active" id="co-step-1">
+    <div class="co-step-q" id="co-q1"></div>
+    <div class="co-role-btns">
+      <button class="co-role-btn" onclick="coPickRole('buy')">
+        <div class="co-role-ico buy">&#8595;</div>
+        <span id="co-lbl-buyer"></span>
+      </button>
+      <button class="co-role-btn" onclick="coPickRole('sell')">
+        <div class="co-role-ico sell">&#8593;</div>
+        <span id="co-lbl-seller"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Step 2: Participant ID -->
+  <div class="co-step" id="co-step-2">
+    <div class="co-step-q" id="co-q2"></div>
+    <div class="co-uid-wrap">
+      <input type="text" class="co-uid-input" id="co-uid-input" placeholder="00000000" maxlength="8" inputmode="numeric">
+      <div class="co-uid-status" id="co-uid-status"></div>
+    </div>
+    <button class="btn-primary co-next-btn" id="co-s2-next" onclick="coValidateUID()" disabled style="margin-top:20px"></button>
+  </div>
+
+  <!-- Step 3: What are you buying/selling -->
+  <div class="co-step" id="co-step-3">
+    <div class="co-step-q" id="co-q3"></div>
+    <div class="co-tabs">
+      <button class="co-tab active" id="co-s3-tab-crypto" onclick="coSetTab(3,'crypto')"></button>
+      <button class="co-tab" id="co-s3-tab-fiat" onclick="coSetTab(3,'fiat')"></button>
+    </div>
+    <div id="co-s3-list"></div>
+  </div>
+
+  <!-- Step 4: Choose order currency -->
+  <div class="co-step" id="co-step-4">
+    <div class="co-step-q" id="co-q4"></div>
+    <div class="co-bal-card">
+      <div class="lbl" id="co-bal-lbl"></div>
+      <div class="amt" id="co-bal-amt">$0.00</div>
+    </div>
+    <div class="co-tabs">
+      <button class="co-tab active" id="co-s4-tab-crypto" onclick="coSetTab(4,'crypto')"></button>
+      <button class="co-tab" id="co-s4-tab-fiat" onclick="coSetTab(4,'fiat')"></button>
+    </div>
+    <div id="co-s4-list"></div>
+  </div>
+
+  <!-- Step 5: Product links -->
+  <div class="co-step" id="co-step-5">
+    <div class="co-step-q" id="co-q5"></div>
+    <div id="co-links-wrap">
+      <input type="url" class="co-link-input" id="co-link-0" placeholder="https://...">
+    </div>
+    <button class="co-add-link" onclick="coAddLink()" id="co-add-link-btn"></button>
+    <button class="btn-primary co-next-btn" onclick="coGoStep(6)" id="co-s5-next"></button>
+  </div>
+
+  <!-- Step 6: Amount -->
+  <div class="co-step" id="co-step-6">
+    <div class="co-step-q" id="co-q6"></div>
+    <div class="co-amt-wrap">
+      <input type="number" class="co-amt-input" id="co-amt-input" placeholder="0.00">
+      <span class="co-amt-cur" id="co-amt-cur"></span>
+    </div>
+    <button class="btn-primary co-next-btn" onclick="coGoStep(7)" id="co-s6-next"></button>
+  </div>
+
+  <!-- Step 7: Confirm -->
+  <div class="co-step" id="co-step-7">
+    <div class="co-confirm-warn" id="co-confirm-warn"></div>
+    <div class="co-confirm-data" id="co-confirm-data"></div>
+    <div class="co-confirm-btns">
+      <button class="co-cfm-btn ok disabled" id="co-cfm-ok" onclick="coSubmit()" disabled></button>
+      <button class="co-cfm-btn no disabled" id="co-cfm-no" onclick="coCancel()" disabled></button>
+    </div>
+    <div class="co-timer-txt" id="co-timer-txt"></div>
+  </div>
+
+  <!-- Step 8: Success -->
+  <div class="co-step" id="co-step-8">
+    <div class="co-success">
+      <div class="co-success-check"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
+      <div class="co-success-title" id="co-ok-title"></div>
+      <div class="co-success-msg" id="co-ok-msg"></div>
+      <button class="btn-primary co-next-btn" onclick="showPage('home')">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- DEAL (Escrow) -->
+<div id="page-deal" class="page">
+  <div class="page-header">
+    <button class="back-btn" onclick="showPage('home')"><svg viewBox="0 0 24 24" fill="none"><polyline points="15,18 9,12 15,6"/></svg></button>
+    <h1 id="deal-title">Deal #1</h1>
+    <div style="margin-left:auto" id="deal-badge"></div>
+  </div>
+
+  <!-- Escrow Stepper -->
+  <div class="escrow-stepper" id="escrow-stepper"></div>
+
+  <!-- Deal Info -->
+  <div style="padding:0 16px">
+    <div class="deal-info" id="deal-info"></div>
+  </div>
+
+  <!-- Timer -->
+  <div style="padding:0 16px" id="deal-timer"></div>
+
+  <!-- Escrow Step Detail -->
+  <div id="escrow-detail-wrap"></div>
+
+  <!-- Actions -->
+  <div style="padding:0 16px">
+    <div id="deal-actions" style="margin-bottom:16px"></div>
+    <div class="chat-box">
+      <div class="chat-header" id="lbl-chat">Chat</div>
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-input">
+        <input type="text" id="chat-input" placeholder="Message...">
+        <button onclick="sendChatMsg()" id="btn-chat-send">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PROFILE -->
+<div id="page-profile" class="page">
+  <div class="page-header"><h1 id="lbl-profile-title">Profile</h1></div>
+  <div class="profile-card">
+    <div class="avatar" style="width:64px;height:64px;font-size:26px" id="prof-avatar">D</div>
+    <p style="font-size:18px;font-weight:600;margin-top:12px" id="prof-name"></p>
+    <p style="color:var(--t2);font-size:14px" id="prof-username"></p>
+    <div class="uid-badge" onclick="copyUID()" id="prof-uid-badge">
+      <span class="uid-label">UID</span>
+      <span class="uid-value" id="prof-uid">00000000</span>
+      <svg class="uid-copy" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+    </div>
+    <div class="user-status-badge" id="prof-status-badge">
+      <span class="status-dot" id="prof-status-dot"></span>
+      <span id="prof-status-text">Beginner</span>
+    </div>
+  </div>
+
+  <div class="stats-grid-wrap">
+    <div class="stats-grid">
+      <div class="stat-mini">
+        <div class="stat-val" id="stat-total">0</div>
+        <div class="stat-label" id="lbl-stat-total">Deals</div>
+      </div>
+      <div class="stat-mini">
+        <div class="stat-val" id="stat-turnover">$0</div>
+        <div class="stat-label" id="lbl-stat-turnover">Turnover</div>
+      </div>
+      <div class="stat-mini">
+        <div class="stat-val" id="stat-completed">0</div>
+        <div class="stat-label" id="lbl-stat-completed">Completed</div>
+      </div>
+      <div class="stat-mini">
+        <div class="stat-val" id="stat-active">0</div>
+        <div class="stat-label" id="lbl-stat-active">Active</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Success Rate -->
+  <div class="prof-block">
+    <div class="section-title" id="lbl-success-rate">Success Rate</div>
+    <div class="success-card">
+      <div class="success-ring-wrap">
+        <svg viewBox="0 0 120 120" width="100" height="100">
+          <circle cx="60" cy="60" r="50" fill="none" stroke="var(--bg2)" stroke-width="8"/>
+          <circle id="success-arc" cx="60" cy="60" r="50" fill="none" stroke="var(--green)" stroke-width="8"
+            stroke-dasharray="314.16" stroke-dashoffset="314.16" stroke-linecap="round"
+            transform="rotate(-90 60 60)"/>
+        </svg>
+        <div class="success-pct" id="success-pct">0%</div>
+      </div>
+      <div class="success-info">
+        <div class="success-row"><span class="sdot" style="background:var(--green)"></span><span id="lbl-sr-done"></span><b id="sr-done-val">0</b></div>
+        <div class="success-row"><span class="sdot" style="background:var(--red)"></span><span id="lbl-sr-cancel"></span><b id="sr-cancel-val">0</b></div>
+        <div class="success-row"><span class="sdot" style="background:var(--yellow)"></span><span id="lbl-sr-dispute"></span><b id="sr-dispute-val">0</b></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activity Chart -->
+  <div class="prof-block">
+    <div class="section-title" id="lbl-activity">Activity</div>
+    <div class="activity-card">
+      <div class="activity-sub" id="lbl-last30">Last 30 days</div>
+      <div class="activity-bars" id="activity-bars"></div>
+    </div>
+  </div>
+
+  <div style="padding:0 16px 16px">
+    <!-- Language -->
+    <div class="prof-setting-card">
+      <span class="prof-setting-lbl" id="lbl-language">Language:</span>
+      <div class="lang-switch">
+        <button class="lang-btn active" onclick="setLang('en')" id="lang-en">English</button>
+        <button class="lang-btn" onclick="setLang('ru')" id="lang-ru">Русский</button>
+      </div>
+    </div>
+
+    <!-- Theme -->
+    <div class="prof-setting-card">
+      <span class="prof-setting-lbl" id="lbl-theme">Theme:</span>
+      <div class="lang-switch">
+        <button class="lang-btn active" onclick="setTheme('dark')" id="theme-dark">Dark</button>
+        <button class="lang-btn" onclick="setTheme('light')" id="theme-light">Light</button>
+      </div>
+    </div>
+
+    <!-- Notifications -->
+    <div class="section-title" style="margin:4px 0 12px" id="lbl-notif-title">Notifications</div>
+    <div class="notif-list">
+      <div class="notif-item"><span id="lbl-notif-deal">New Deal</span>
+        <div class="notif-toggle on" id="ntog-deal" onclick="toggleNotif('deal')"><div class="knob"></div></div></div>
+      <div class="notif-item"><span id="lbl-notif-pay">Payment Received</span>
+        <div class="notif-toggle on" id="ntog-pay" onclick="toggleNotif('pay')"><div class="knob"></div></div></div>
+      <div class="notif-item"><span id="lbl-notif-dispute">Dispute Opened</span>
+        <div class="notif-toggle on" id="ntog-dispute" onclick="toggleNotif('dispute')"><div class="knob"></div></div></div>
+      <div class="notif-item"><span id="lbl-notif-complete">Deal Completed</span>
+        <div class="notif-toggle on" id="ntog-complete" onclick="toggleNotif('complete')"><div class="knob"></div></div></div>
+    </div>
+
+    <div class="toggle-row" style="margin:16px 0 16px">
+      <button class="toggle-btn active-yellow" onclick="setProfileTab('orders')" id="prof-orders-btn">My Orders</button>
+      <button class="toggle-btn" onclick="setProfileTab('deals')" id="prof-deals-btn">My Deals</button>
+    </div>
+    <div id="prof-tab-content"></div>
+
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div class="bottom-nav" id="bottom-nav" style="display:none">
+  <button class="nav-btn active" onclick="showPage('home')" id="nav-home">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/>
+    </svg>
+    <span>Home</span>
+  </button>
+  <button class="nav-btn" onclick="showPage('wallet')" id="nav-wallet">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="6" width="20" height="14" rx="2"/>
+      <path d="M16 14a1 1 0 100-2 1 1 0 000 2z" fill="currentColor" stroke="none"/>
+      <path d="M2 10h20"/>
+      <path d="M6 6V4a2 2 0 012-2h8a2 2 0 012 2v2"/>
+    </svg>
+    <span>Wallet</span>
+  </button>
+  <button class="nav-btn" onclick="showPage('profile')" id="nav-profile">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/>
+    </svg>
+    <span>Profile</span>
+  </button>
+</div>
+
+<script>
+var APP_NAME = '';
+
+// STATE
+var locale = 'en';
+try { locale = localStorage.getItem('p2p_locale') || 'en'; } catch(e){}
+var balanceVisible = true;
+var balanceAnimating = false;
+var currentPage = 'home';
+
+var profileTab = 'orders';
+var bannerIdx = 0;
+var bannerTimer = null;
+var dealTimerInterval = null;
+var currentDeal = null;
+var chatMessages = [];
+var expandedCrypto = {};
+
+// UID generation from telegram_id
+function generateUID(telegramId) {
+  var id = Math.abs(telegramId || Date.now());
+  var hash = ((id * 2654435761) >>> 0) % 90000000 + 10000000;
+  return hash;
+}
+
+var user = {id:1, telegram_id:123456789, username:'', first_name:'', uid:0, status:'Beginner'};
+user.uid = generateUID(user.telegram_id);
+
+// Simulated user database for UID validation
+var knownUsers = {};
+knownUsers[generateUID(123456789)] = {uid:generateUID(123456789), username:'demo_user', first_name:'Demo'};
+knownUsers[generateUID(222222222)] = {uid:generateUID(222222222), username:'crypto_trader', first_name:'Alex'};
+knownUsers[generateUID(333333333)] = {uid:generateUID(333333333), username:'btc_whale', first_name:'Maria'};
+knownUsers[generateUID(444444444)] = {uid:generateUID(444444444), username:'star_dealer', first_name:'Ivan'};
+knownUsers[generateUID(555555555)] = {uid:generateUID(555555555), username:'eth_fan', first_name:'Olga'};
+knownUsers[generateUID(666666666)] = {uid:generateUID(666666666), username:'ton_master', first_name:'Dmitry'};
+
+function validateUID(uid) {
+  return knownUsers[uid] || null;
+}
+
+var savedWallets = {};
+try { savedWallets = JSON.parse(localStorage.getItem('p2p_wallets')||'{}'); } catch(e){}
+
+var API_BASE = '';
+(function() {
+  var s = document.querySelector('script[data-api-base]');
+  if (s) API_BASE = s.getAttribute('data-api-base');
+  if (!API_BASE) {
+    var m = document.querySelector('meta[name="api-base"]');
+    if (m) API_BASE = m.getAttribute('content');
+  }
+  if (!API_BASE && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    API_BASE = location.origin;
+  }
+  if (!API_BASE) API_BASE = 'http://localhost:8000';
+})();
+
+function getInitData() {
+  try { return (window.Telegram && Telegram.WebApp) ? Telegram.WebApp.initData : ''; } catch(e) { return ''; }
+}
+
+function apiFetch(path, opts) {
+  opts = opts || {};
+  var headers = opts.headers || {};
+  headers['X-Telegram-Init-Data'] = getInitData();
+  if (opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  opts.headers = headers;
+  return fetch(API_BASE + path, opts).then(function(r) {
+    if (!r.ok) return r.json().then(function(e) { throw e; }, function() { throw {detail: 'Network error'}; });
+    return r.json();
+  });
+}
+var appTheme = 'dark';
+try { appTheme = localStorage.getItem('p2p_theme') || 'dark'; } catch(e){}
+if (appTheme === 'light') document.documentElement.setAttribute('data-theme','light');
+var notifSettings = {deal:true, pay:true, dispute:true, complete:true};
+try { var ns = JSON.parse(localStorage.getItem('p2p_notifs')||'{}'); if (ns && typeof ns === 'object') notifSettings = Object.assign(notifSettings, ns); } catch(e){}
+
+// SECURITY: initDataUnsafe is NOT cryptographically verified on the client.
+// The backend MUST validate Telegram.WebApp.initData using HMAC-SHA256
+// with the bot token to prevent replay attacks and data spoofing.
+try {
+  if (window.Telegram && Telegram.WebApp && Telegram.WebApp.initDataUnsafe && Telegram.WebApp.initDataUnsafe.user) {
+    var tg = Telegram.WebApp.initDataUnsafe.user;
+    user.telegram_id = typeof tg.id === 'number' ? tg.id : 0;
+    user.username = String(tg.username || '').replace(/[^a-zA-Z0-9_]/g, '');
+    user.first_name = escapeHtml(tg.first_name || 'User');
+    user.uid = generateUID(user.telegram_id);
+    if (!knownUsers[user.uid]) {
+      knownUsers[user.uid] = {uid:user.uid, username:user.username, first_name:user.first_name};
+    }
+    if (tg.language_code === 'ru') locale = 'ru';
+    Telegram.WebApp.expand();
+    var tgBg = appTheme === 'light' ? '#FAFAFA' : '#0B0E11';
+    Telegram.WebApp.setHeaderColor(tgBg);
+    Telegram.WebApp.setBackgroundColor(tgBg);
+  }
+} catch(e) {}
+
+function initFromBackend() {
+  apiFetch('/api/user/me').then(function(u) {
+    user.id = u.id;
+    user.uid = u.uid;
+    user.status = u.status || 'Beginner';
+    user.total_deals = u.total_deals || 0;
+    user.successful_deals = u.successful_deals || 0;
+    user.activity_pct = u.activity_pct || 0;
+    if (u.username) user.username = u.username;
+    if (u.first_name) user.first_name = u.first_name;
+    if (currentPage === 'profile') renderProfile();
+    return apiFetch('/api/wallets');
+  }).then(function(w) {
+    savedWallets = w || {};
+    try { localStorage.setItem('p2p_wallets', JSON.stringify(savedWallets)); } catch(e){}
+    if (currentPage === 'wallet') renderWallet();
+  }).catch(function(e) {
+    console.warn('Backend init failed:', e);
+  });
+}
+initFromBackend();
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function isValidUrl(str) {
+  if (!str) return false;
+  try { var u = new URL(str); return u.protocol === 'http:' || u.protocol === 'https:'; } catch(e) { return false; }
+}
+
+function copyUID() {
+  try { navigator.clipboard.writeText(String(user.uid)); } catch(e) {}
+}
+
+// CRYPTO
+var ASSET_BASE = 'https://raw.githubusercontent.com/pathfys/bmark/main/assets/';
+var cryptoIcons = {BTC:ASSET_BASE+'Bitcoin-Logo.png',ETH:ASSET_BASE+'ethereum-eth-logo.png',USDT:ASSET_BASE+'Tether_USDT.png',GRAM:ASSET_BASE+'Gram%20Diamond%20Mark.png',TON:ASSET_BASE+'Gram%20Diamond%20Mark.png',STARS:ASSET_BASE+'tg%20stars.webp',BNB:ASSET_BASE+'bnb-bnb-logo.png',SOL:ASSET_BASE+'solana%20logo.png'};
+var cryptoFallback = {BTC:'₿',ETH:'Ξ',USDT:'₮',GRAM:'◆',TON:'◆',STARS:'★',BNB:'◇',SOL:'◎'};
+
+function cryptoImg(cur) {
+  var src = cryptoIcons[cur];
+  var fb = cryptoFallback[cur] || cur[0];
+  if (!src) return fb;
+  return '<img src="'+src+'" alt="'+cur+'" width="20" height="20" style="border-radius:50%;background:rgba(255,255,255,0.08)" onerror="this.outerHTML=\''+fb+'\'">';
+}
+
+var eyeOpen = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#848E9C" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+var eyeClosed = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#848E9C" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+// i18n
+var L = {
+  en: {
+    'nav.home':'Home','nav.wallet':'Wallet','nav.profile':'Profile',
+    'balance':'Estimated Balance','deposit':'Deposit','withdraw':'Withdraw',
+    'pnl_today':'PnL Today',
+    'buy':'Buy','sell':'Sell','crypto':'Crypto','fiat':'Fiat','price':'Price','amount':'Amount',
+    'available':'Available','payment':'Payment','create_order':'Create Order','no_orders':'No orders yet',
+    'min_limit':'Min Limit','max_limit':'Max Limit','payment_method':'Payment Method',
+    'terms':'Terms & Conditions','side':'I want to','submit':'Submit Order','price_unit':'Price per unit',
+    'deal_title':'Deal #{id}','status':'Status','pending':'Pending','paid':'Paid','completed':'Completed',
+    'cancelled':'Cancelled','disputed':'Disputed','mark_paid':'Mark as Paid','confirm_receipt':'Confirm Receipt',
+    'cancel_deal':'Cancel Deal','enter_amt':'Enter amount','total':'Total','confirm':'Confirm Deal',
+    'chat':'Chat','send':'Send','time_left':'Time left to pay','buyer':'Buyer','seller':'Seller',
+    'profile':'Profile','language':'Language','my_orders':'My Orders','my_deals':'My Deals',
+    'deals_done':'Deals Completed','tg_id':'Telegram ID',
+    'toast_wallet_title':'Wallet Not Linked','toast_wallet_msg':'Please link your {wallet} wallet before proceeding. Go to Wallet page to add your address.',
+    'all_crypto':'All Crypto','all_fiat':'All Fiat',
+    'markets':'Markets','create_deal':'Create Deal',
+    'wallet':'Wallet','bind_wallet':'Bind Wallet',
+    'crypto_currencies':'Cryptocurrencies','fiat_currencies':'Fiat Currencies',
+    'save':'Save','edit':'Edit',
+    'valid_address':'Valid address','invalid_address':'Invalid address',
+    'enter_address':'Enter wallet address',
+    'stat_total':'Deals','stat_turnover':'Turnover','stat_completed':'Completed','stat_active':'Active',
+    'co_q1':'Who are you in the deal?','co_buyer':'Buyer','co_seller':'Seller',
+    'co_q2_uid':'Enter the participant\'s ID',
+    'co_uid_placeholder':'Enter 8-digit UID',
+    'co_uid_found':'User found','co_uid_notfound':'User not found','co_uid_self':'You cannot enter your own ID',
+    'co_uid_verify':'Verify & Continue',
+    'co_q3_buy':'Specify what you are buying in the order','co_q3_sell':'Specify what you are selling in the order',
+    'co_q4':'Choose the order currency','co_crypto_tab':'Cryptocurrencies','co_fiat_tab':'Fiat Currencies',
+    'co_q5':'Specify the link(s) to the product you are offering in the order',
+    'co_q6_buy':'Specify the purchase amount','co_q6_sell':'Specify the sale amount',
+    'co_confirm_warn':'Make sure all order fields are filled correctly!',
+    'co_confirm':'Confirm','co_cancel':'Cancel',
+    'co_success':'You have successfully created an order!',
+    'co_success_msg':'Go to the bot chat for further trading',
+    'co_role':'Role','co_asset':'Asset','co_currency':'Currency',
+    'co_links_lbl':'Links','co_amount_lbl':'Amount','co_participant':'Participant',
+    'co_total_bal':'Total Balance','co_add_link':'+ Add link','co_next':'Next',
+    'co_timer_wait':'Buttons will be active in {s} sec',
+    'success_rate':'Success Rate','sr_done':'Completed','sr_cancel':'Cancelled','sr_dispute':'Disputed',
+    'activity':'Activity','last_30':'Last 30 days',
+    'theme':'Theme','theme_dark':'Dark','theme_light':'Light',
+    'notif_title':'Notifications','notif_deal':'New Deal','notif_pay':'Payment Received',
+    'notif_dispute':'Dispute Opened','notif_complete':'Deal Completed',
+    'uid_label':'UID',
+    'no_txn':'No transactions yet',
+    'escrow_s1':'Payment','escrow_s2':'Verification','escrow_s3':'Shipment','escrow_s4':'Receipt',
+    'escrow_s1_buyer':'Transfer payment to the seller using the agreed payment method. After sending, click "Payment Sent" to notify the seller.',
+    'escrow_s1_seller':'Wait for the buyer to send payment. <strong>Do not send goods until payment is confirmed.</strong> You will be notified when the buyer marks payment as sent.',
+    'escrow_s2_buyer':'Payment has been marked as sent. Wait for the seller to verify receipt of funds in their account.',
+    'escrow_s2_seller':'The buyer has marked payment as sent. <strong>Check your account</strong> and verify the funds have arrived, then click "Payment Received".',
+    'escrow_s3_buyer':'The seller is preparing your order. Please wait for confirmation of shipment.',
+    'escrow_s3_seller':'Payment has been confirmed. <strong>Send the goods/crypto</strong> to the buyer now. After sending, click "Goods Sent".',
+    'escrow_s4_buyer':'The seller has sent the goods. <strong>Check that you received everything</strong>, then click "Confirm Receipt" to complete the deal.',
+    'escrow_s4_seller':'Goods have been sent. Wait for the buyer to confirm receipt. Funds will be released upon confirmation.',
+    'escrow_done':'Deal completed successfully!','escrow_done_msg':'Both parties confirmed. The deal is closed.',
+    'btn_payment_sent':'Payment Sent','btn_payment_received':'Payment Received',
+    'btn_goods_sent':'Goods Sent','btn_confirm_receipt':'Confirm Receipt',
+    'btn_cancel':'Cancel Deal','btn_dispute':'Open Dispute',
+    'waiting_payment':'Waiting for buyer to send payment...','waiting_verify':'Waiting for seller to verify payment...',
+    'waiting_shipment':'Waiting for seller to send goods...','waiting_receipt':'Waiting for buyer to confirm receipt...',
+    'awaiting_payment':'Awaiting Payment','payment_confirmed':'Payment Confirmed','goods_sent':'Goods Sent'
+  },
+  ru: {
+    'nav.home':'Главная','nav.wallet':'Кошелёк','nav.profile':'Профиль',
+    'balance':'Примерный баланс','deposit':'Пополнить','withdraw':'Вывести',
+    'pnl_today':'PnL за день',
+    'buy':'Купить','sell':'Продать','crypto':'Крипто','fiat':'Фиат','price':'Цена','amount':'Количество',
+    'available':'Доступно','payment':'Оплата','create_order':'Создать ордер','no_orders':'Ордеров пока нет',
+    'min_limit':'Мин. лимит','max_limit':'Макс. лимит','payment_method':'Способ оплаты',
+    'terms':'Условия сделки','side':'Я хочу','submit':'Разместить ордер','price_unit':'Цена за единицу',
+    'deal_title':'Сделка #{id}','status':'Статус','pending':'Ожидание','paid':'Оплачено','completed':'Завершено',
+    'cancelled':'Отменено','disputed':'Спор','mark_paid':'Отметить оплату','confirm_receipt':'Подтвердить получение',
+    'cancel_deal':'Отменить сделку','enter_amt':'Введите сумму','total':'Итого','confirm':'Подтвердить',
+    'chat':'Чат','send':'Отправить','time_left':'Осталось на оплату','buyer':'Покупатель','seller':'Продавец',
+    'profile':'Профиль','language':'Язык','my_orders':'Мои ордера','my_deals':'Мои сделки',
+    'deals_done':'Завершённых сделок','tg_id':'Telegram ID',
+    'toast_wallet_title':'Кошелёк не привязан','toast_wallet_msg':'Пожалуйста, привяжите ваш {wallet} кошелёк перед продолжением. Перейдите в раздел Кошелёк для добавления адреса.',
+    'crypto_currencies':'Криптовалюты','fiat_currencies':'Фиатные валюты',
+    'all_crypto':'Все крипто','all_fiat':'Все фиат',
+    'markets':'Рынки','create_deal':'Создать сделку',
+    'wallet':'Кошелёк','bind_wallet':'Привязать кошелёк',
+    'save':'Сохранить','edit':'Изменить',
+    'valid_address':'Адрес верный','invalid_address':'Неверный адрес',
+    'enter_address':'Введите адрес кошелька',
+    'stat_total':'Сделок','stat_turnover':'Оборот сделок','stat_completed':'Завершённых','stat_active':'Текущих',
+    'co_q1':'Кем вы являетесь в сделке?','co_buyer':'Покупатель','co_seller':'Продавец',
+    'co_q2_uid':'Укажите ID участника ордера',
+    'co_uid_placeholder':'Введите 8-значный UID',
+    'co_uid_found':'Пользователь найден','co_uid_notfound':'Пользователь не найден','co_uid_self':'Нельзя указать свой ID',
+    'co_uid_verify':'Проверить и продолжить',
+    'co_q3_buy':'Укажите, что вы покупаете в ордере','co_q3_sell':'Укажите, что вы продаёте в ордере',
+    'co_q4':'Выберите валюту ордера','co_crypto_tab':'Криптовалюты','co_fiat_tab':'Фиатные валюты',
+    'co_q5':'Укажите ссылку(ки) на товар который вы предлагаете в ордере',
+    'co_q6_buy':'Укажите сумму покупки','co_q6_sell':'Укажите сумму продажи',
+    'co_confirm_warn':'Убедитесь в правильности заполнения всех пунктов ордера!',
+    'co_confirm':'Подтвердить','co_cancel':'Отказаться',
+    'co_success':'Вы успешно создали ордер!',
+    'co_success_msg':'Перейдите в чат с ботом, для дальнейшей торговли',
+    'co_role':'Роль','co_asset':'Актив','co_currency':'Валюта',
+    'co_links_lbl':'Ссылки','co_amount_lbl':'Сумма','co_participant':'Участник',
+    'co_total_bal':'Общий баланс','co_add_link':'+ Добавить ссылку','co_next':'Далее',
+    'co_timer_wait':'Кнопки будут активны через {s} сек',
+    'success_rate':'Процент успешных','sr_done':'Завершённых','sr_cancel':'Отменённых','sr_dispute':'Споров',
+    'activity':'Активность','last_30':'Последние 30 дней',
+    'theme':'Тема','theme_dark':'Тёмная','theme_light':'Светлая',
+    'notif_title':'Уведомления','notif_deal':'Новая сделка','notif_pay':'Платёж получен',
+    'notif_dispute':'Спор открыт','notif_complete':'Сделка завершена',
+    'uid_label':'UID',
+    'no_txn':'Сделок пока нет',
+    'escrow_s1':'Оплата','escrow_s2':'Проверка','escrow_s3':'Отправка','escrow_s4':'Получение',
+    'escrow_s1_buyer':'Переведите оплату продавцу согласованным способом. После отправки нажмите «Оплата отправлена», чтобы уведомить продавца.',
+    'escrow_s1_seller':'Ожидайте оплату от покупателя. <strong>Не отправляйте товар до подтверждения оплаты.</strong> Вы получите уведомление, когда покупатель отметит оплату.',
+    'escrow_s2_buyer':'Оплата отмечена как отправленная. Ожидайте, пока продавец проверит поступление средств.',
+    'escrow_s2_seller':'Покупатель отметил оплату. <strong>Проверьте ваш счёт</strong> и убедитесь, что средства поступили, затем нажмите «Оплата получена».',
+    'escrow_s3_buyer':'Продавец готовит ваш заказ. Пожалуйста, ожидайте подтверждения отправки.',
+    'escrow_s3_seller':'Оплата подтверждена. <strong>Отправьте товар/крипту</strong> покупателю. После отправки нажмите «Товар отправлен».',
+    'escrow_s4_buyer':'Продавец отправил товар. <strong>Проверьте, что вы всё получили</strong>, затем нажмите «Подтвердить получение».',
+    'escrow_s4_seller':'Товар отправлен. Ожидайте подтверждения получения от покупателя. Средства будут переведены после подтверждения.',
+    'escrow_done':'Сделка успешно завершена!','escrow_done_msg':'Обе стороны подтвердили. Сделка закрыта.',
+    'btn_payment_sent':'Оплата отправлена','btn_payment_received':'Оплата получена',
+    'btn_goods_sent':'Товар отправлен','btn_confirm_receipt':'Подтвердить получение',
+    'btn_cancel':'Отменить сделку','btn_dispute':'Открыть спор',
+    'waiting_payment':'Ожидание оплаты от покупателя...','waiting_verify':'Ожидание подтверждения оплаты продавцом...',
+    'waiting_shipment':'Ожидание отправки товара продавцом...','waiting_receipt':'Ожидание подтверждения получения покупателем...',
+    'awaiting_payment':'Ожидание оплаты','payment_confirmed':'Оплата подтверждена','goods_sent':'Товар отправлен'
+  }
+};
+
+function t(key, params) {
+  var s = (L[locale] && L[locale][key]) || L.en[key] || key;
+  if (params) {
+    Object.keys(params).forEach(function(k) { s = s.replace('{'+k+'}', params[k]); });
+  }
+  return s;
+}
+
+// DATA
+var balances = [
+  {currency:'BTC',balance:0,frozen:0},{currency:'ETH',balance:0,frozen:0},
+  {currency:'USDT',balance:0,frozen:0},{currency:'GRAM',balance:0,frozen:0},
+  {currency:'STARS',balance:0,frozen:0}
+];
+
+var orders = [
+  {id:1,user_id:2,username:'crypto_trader',first_name:'Alex',side:'sell',crypto_currency:'USDT',
+   fiat_currency:'RUB',price:0,amount:0,min_limit:0,max_limit:0,
+   payment_method:'Sberbank, Tinkoff',terms:'Fast transfer',status:'active'},
+  {id:2,user_id:3,username:'btc_whale',first_name:'Maria',side:'sell',crypto_currency:'BTC',
+   fiat_currency:'USD',price:0,amount:0,min_limit:0,max_limit:0,
+   payment_method:'PayPal, Wise',status:'active'},
+  {id:3,user_id:4,username:'star_dealer',first_name:'Ivan',side:'sell',crypto_currency:'STARS',
+   fiat_currency:'USD',price:0,amount:0,min_limit:0,max_limit:0,
+   payment_method:'Any crypto',status:'active'},
+  {id:4,user_id:5,username:'eth_fan',first_name:'Olga',side:'buy',crypto_currency:'ETH',
+   fiat_currency:'EUR',price:0,amount:0,min_limit:0,max_limit:0,
+   payment_method:'SEPA, Revolut',status:'active'},
+];
+
+var deals = [];
+function loadDeals() {
+  apiFetch('/api/deals/my/list').then(function(r) {
+    deals = r.deals || [];
+    if (currentPage === 'profile') renderProfileTab();
+  }).catch(function(){});
+}
+
+// WALLET CURRENCIES CONFIG
+var walletCryptos = [
+  {sym:'BTC', name:'Bitcoin',icon:ASSET_BASE+'Bitcoin-Logo.png'},
+  {sym:'ETH', name:'Ethereum',icon:ASSET_BASE+'ethereum-eth-logo.png'},
+  {sym:'USDT',name:'Tether',icon:ASSET_BASE+'Tether_USDT.png'},
+  {sym:'TON', name:'Toncoin',icon:ASSET_BASE+'Gram%20Diamond%20Mark.png'},
+  {sym:'BNB', name:'BNB',icon:ASSET_BASE+'bnb-bnb-logo.png'},
+  {sym:'SOL', name:'Solana',icon:ASSET_BASE+'solana%20logo.png'},
+  {sym:'STARS',name:'Telegram Stars',icon:ASSET_BASE+'tg%20stars.webp'},
+];
+
+var walletFiats = [
+  {sym:'USD',name:'US Dollar',flag:'🇺🇸'},
+  {sym:'EUR',name:'Euro',flag:'🇪🇺'},
+  {sym:'RUB',name:'Russian Ruble',flag:'🇷🇺'},
+  {sym:'UAH',name:'Ukrainian Hryvnia',flag:'🇺🇦'},
+  {sym:'TRY',name:'Turkish Lira',flag:'🇹🇷'},
+  {sym:'CNY',name:'Chinese Yuan',flag:'🇨🇳'},
+  {sym:'GBP',name:'British Pound',flag:'🇬🇧'},
+  {sym:'MDL',name:'Moldovan Leu',flag:'🇲🇩'},
+];
+
+// NAVIGATION
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+  var el = document.getElementById('page-' + name);
+  if (el) el.classList.add('active');
+  currentPage = name;
+
+  document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
+  var nb = document.getElementById('nav-' + name);
+  if (nb) nb.classList.add('active');
+
+  if (name === 'home') renderHome();
+  if (name === 'wallet') renderWallet();
+  if (name === 'profile') { loadDeals(); renderProfile(); }
+  if (name === 'create-order') initCoWizard();
+}
+
+// HOME
+function renderHome() {
+  document.getElementById('lbl-balance').textContent = t('balance');
+  document.getElementById('btn-deposit').textContent = t('deposit');
+  document.getElementById('btn-withdraw').textContent = t('withdraw');
+  document.getElementById('lbl-markets').textContent = t('markets');
+  document.getElementById('lbl-create-deal').textContent = t('create_deal');
+  document.getElementById('pnl-label').textContent = t('pnl_today');
+
+  var prices = {BTC:0,ETH:0,USDT:0,GRAM:0,STARS:0};
+  var total = balances.reduce(function(s,b) { return s + b.balance * (prices[b.currency]||0); }, 0);
+
+  var balEl = document.getElementById('balance-amount');
+  if (balanceVisible) {
+    balEl.textContent = '$' + total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    balEl.classList.remove('blurred');
+  } else {
+    balEl.textContent = '****';
+    balEl.classList.remove('blurred');
+  }
+  document.getElementById('eye-btn').innerHTML = balanceVisible ? eyeOpen : eyeClosed;
+
+  var iconsRow = document.getElementById('crypto-icons-row');
+  iconsRow.innerHTML = balances.map(function(b) {
+    return '<div class="crypto-icon"><span class="sym">'+cryptoImg(b.currency)+'</span><span class="name">'+b.currency+'</span></div>';
+  }).join('');
+
+  renderBanners();
+  renderMarkets();
+}
+
+function toggleBalance() {
+  if (balanceAnimating) return;
+  var balEl = document.getElementById('balance-amount');
+  if (balanceVisible) {
+    balanceAnimating = true;
+    balEl.classList.add('blurred');
+    setTimeout(function() {
+      balanceVisible = false;
+      balEl.textContent = '****';
+      balEl.classList.remove('blurred');
+      balanceAnimating = false;
+    }, 300);
+  } else {
+    balanceVisible = true;
+    renderHome();
+  }
+}
+
+// BANNERS
+var bannerImages = [
+  ASSET_BASE+'swipe%20card%201.png',
+  ASSET_BASE+'swipe%20card%202.png',
+  ASSET_BASE+'action%20card(swipe)%203.png',
+  ASSET_BASE+'action%20card(swipe)4.png',
+  ASSET_BASE+'10%20bnb.JPG',
+  ASSET_BASE+'gopro%20%D0%B8%20reddit.JPG'
+];
+function renderBanners() {
+  var c = document.getElementById('banner-container');
+  c.innerHTML = bannerImages.map(function(src, i) {
+    var cls = i === bannerIdx ? 'visible' : (i < bannerIdx ? 'hide-left' : 'hide-right');
+    return '<div class="banner '+cls+'"><img src="'+src+'" alt="Banner"></div>';
+  }).join('');
+  var dotsEl = document.getElementById('banner-dots');
+  dotsEl.innerHTML = bannerImages.map(function(_, i) {
+    return '<div class="dot'+(i===bannerIdx?' active':'')+'" onclick="goToBanner('+i+')"></div>';
+  }).join('');
+  if (bannerTimer) clearInterval(bannerTimer);
+  bannerTimer = setInterval(function() {
+    bannerIdx = (bannerIdx + 1) % bannerImages.length;
+    updateBanners();
+  }, 5000);
+}
+function goToBanner(i) { bannerIdx = i; updateBanners(); }
+function updateBanners() {
+  var banners = document.querySelectorAll('#banner-container .banner');
+  var dots = document.querySelectorAll('#banner-dots .dot');
+  banners.forEach(function(b, i) {
+    b.className = 'banner ' + (i === bannerIdx ? 'visible' : (i < bannerIdx ? 'hide-left' : 'hide-right'));
+  });
+  dots.forEach(function(d, i) { d.className = 'dot' + (i === bannerIdx ? ' active' : ''); });
+}
+
+// MARKETS
+var cgMap = {
+  BTC:{id:'bitcoin',name:'Bitcoin'},
+  ETH:{id:'ethereum',name:'Ethereum'},
+  USDT:{id:'tether',name:'Tether'},
+  GRAM:{id:'the-open-network',name:'Toncoin'},
+  BNB:{id:'binancecoin',name:'BNB'},
+  SOL:{id:'solana',name:'Solana'},
+};
+var marketCache = null;
+
+function sampleArr(arr, n) {
+  if (arr.length <= n) return arr;
+  var step = (arr.length - 1) / (n - 1);
+  return Array.from({length:n}, function(_,i) { return arr[Math.round(i * step)]; });
+}
+
+function fetchMarkets() {
+  var ids = Object.keys(cgMap).map(function(k) { return cgMap[k].id; }).join(',');
+  fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids='+ids+'&sparkline=true&price_change_percentage=24h')
+    .then(function(r) { return r.json(); })
+    .then(function(data) { if (Array.isArray(data)) { marketCache = data; renderMarkets(); } })
+    .catch(function() {});
+}
+
+function renderMarkets() {
+  var el = document.getElementById('markets-list');
+  if (!marketCache) { el.innerHTML = ''; return; }
+  el.innerHTML = marketCache.map(function(c) {
+    var sym = Object.keys(cgMap).find(function(k) { return cgMap[k].id === c.id; }) || '';
+    var change = c.price_change_percentage_24h || 0;
+    var dir = change >= 0 ? 'up' : 'down';
+    var spark = '';
+    if (c.sparkline_in_7d && c.sparkline_in_7d.price) {
+      var pts = sampleArr(c.sparkline_in_7d.price, 20);
+      var min = Math.min.apply(null, pts);
+      var max = Math.max.apply(null, pts);
+      var range = max - min || 1;
+      var pathD = pts.map(function(v,i) {
+        var x = (i / (pts.length-1)) * 60;
+        var y = 24 - ((v - min) / range) * 22;
+        return (i===0?'M':'L') + x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      var sColor = dir === 'up' ? 'var(--green)' : 'var(--red)';
+      spark = '<svg width="60" height="24" viewBox="0 0 60 24" fill="none"><path d="'+pathD+'" stroke="'+sColor+'" stroke-width="1.5" fill="none"/></svg>';
+    }
+    var icon = cryptoIcons[sym] || '';
+    var fb = cryptoFallback[sym] || sym[0] || '?';
+    var imgTag = icon ? '<img class="market-icon" src="'+icon+'" alt="'+sym+'" onerror="this.outerHTML=\'<div class=market-icon style=display:flex;align-items:center;justify-content:center;font-size:14px;background:var(--bg2)>'+fb+'</div>\'">' :
+      '<div class="market-icon" style="display:flex;align-items:center;justify-content:center;font-size:14px;background:var(--bg2)">'+fb+'</div>';
+    return '<div class="market-card">'+imgTag+
+      '<div class="market-info"><div class="market-name">'+escapeHtml(c.name)+'</div><div class="market-sym">'+escapeHtml(sym)+'</div></div>'+
+      '<div class="market-right"><div>'+spark+'</div><div><div class="market-price">$'+c.current_price.toLocaleString('en-US')+'</div>'+
+      '<div class="market-change '+dir+'">'+( change >= 0 ? '+' : '')+change.toFixed(2)+'%</div></div></div></div>';
+  }).join('');
+}
+
+// WALLET
+function renderWallet() {
+  document.getElementById('lbl-wallet-title').textContent = t('wallet');
+  document.getElementById('wallet-total-lbl').textContent = t('co_total_bal');
+  document.getElementById('bind-wallet-lbl').textContent = t('bind_wallet');
+  document.getElementById('lbl-crypto-cur').textContent = t('crypto_currencies');
+  document.getElementById('lbl-fiat-cur').textContent = t('fiat_currencies');
+
+  document.getElementById('wallet-crypto-list').innerHTML = walletCryptos.map(function(c) {
+    var saved = savedWallets[c.sym];
+    var fb = cryptoFallback[c.sym] || c.sym[0];
+    var expandOpen = expandedCrypto[c.sym] ? ' open' : '';
+    var bodyHtml = '';
+    if (saved) {
+      bodyHtml = '<div class="wcrypto-saved"><span class="addr">'+escapeHtml(saved)+'</span>'+
+        '<button onclick="editWallet(\''+c.sym+'\')">'+t('edit')+'</button></div>';
+    } else {
+      bodyHtml = '<div class="wcrypto-input-row">'+
+        '<input type="text" id="winp-'+c.sym+'" placeholder="'+t('enter_address')+'">'+
+        '<button onclick="saveWallet(\''+c.sym+'\')">'+t('save')+'</button></div>'+
+        '<div class="wcrypto-status" id="wstatus-'+c.sym+'"></div>';
+    }
+    return '<div class="wcrypto-card"><div class="wcrypto-header" onclick="toggleCryptoExpand(\''+c.sym+'\')">'+
+      '<img class="wcrypto-icon" src="'+c.icon+'" alt="'+c.sym+'" onerror="this.outerHTML=\'<div class=wcrypto-icon style=display:flex;align-items:center;justify-content:center;font-size:14px>'+fb+'</div>\'">'+
+      '<div class="wcrypto-info"><div class="wcrypto-name">'+c.name+'</div><div class="wcrypto-sym">'+c.sym+'</div></div>'+
+      '<div class="wcrypto-bal"><div class="amt">0.00 '+c.sym+'</div><div class="usd">$0.00</div></div>'+
+      '<svg class="wcrypto-chevron'+expandOpen+'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6,9 12,15 18,9"/></svg>'+
+      '</div><div class="wcrypto-expand'+expandOpen+'">'+bodyHtml+'</div></div>';
+  }).join('');
+
+  document.getElementById('wallet-fiat-list').innerHTML = walletFiats.map(function(f) {
+    return '<div class="wfiat-card"><div class="wfiat-flag">'+f.flag+'</div>'+
+      '<div class="wfiat-info"><div class="wfiat-name">'+f.name+'</div><div class="wfiat-sym">'+f.sym+'</div></div>'+
+      '<div class="wfiat-bal">0.00 '+f.sym+'</div></div>';
+  }).join('');
+}
+
+function toggleWalletSections() {
+  var el = document.getElementById('wallet-sections');
+  el.classList.toggle('visible');
+}
+function toggleCryptoExpand(sym) {
+  expandedCrypto[sym] = !expandedCrypto[sym];
+  renderWallet();
+}
+function editWallet(sym) {
+  delete savedWallets[sym];
+  try { localStorage.setItem('p2p_wallets', JSON.stringify(savedWallets)); } catch(e){}
+  apiFetch('/api/wallets/' + sym, {method:'DELETE'}).catch(function(){});
+  renderWallet();
+}
+
+function validateTON(addr) { return /^(UQ|EQ|kQ)[A-Za-z0-9_-]{46}$/.test(addr) || /^0:[a-fA-F0-9]{64}$/.test(addr); }
+function validateBTC(addr) { return /^(1[A-HJ-NP-Za-km-z1-9]{25,34}|3[A-HJ-NP-Za-km-z1-9]{25,34}|bc1[a-zA-HJ-NP-Z0-9]{25,90})$/.test(addr); }
+function validateETH(addr) { return /^0x[a-fA-F0-9]{40}$/.test(addr); }
+function validateBNB(addr) { return /^(0x[a-fA-F0-9]{40}|bnb1[a-z0-9]{38})$/.test(addr); }
+function validateSOL(addr) { return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr); }
+var walletValidators = { BTC: validateBTC, ETH: validateETH, USDT: validateETH,
+  TON: validateTON, BNB: validateBNB, SOL: validateSOL, STARS: null };
+
+function saveWallet(sym) {
+  var inp = document.getElementById('winp-'+sym);
+  var st = document.getElementById('wstatus-'+sym);
+  if (!inp) return;
+  var addr = inp.value.trim();
+  if (!addr) return;
+  var validator = walletValidators[sym];
+  if (validator) {
+    if (validator(addr)) {
+      st.className = 'wcrypto-status ok'; st.textContent = t('valid_address');
+      savedWallets[sym] = addr;
+      try { localStorage.setItem('p2p_wallets', JSON.stringify(savedWallets)); } catch(e){}
+      apiFetch('/api/wallets', {method:'POST', body:{wallet_type:sym, address:addr}}).catch(function(){});
+      setTimeout(function() { renderWallet(); }, 500);
+    } else {
+      st.className = 'wcrypto-status err'; st.textContent = t('invalid_address');
+      inp.classList.add('invalid'); inp.classList.remove('valid');
+    }
+  } else {
+    savedWallets[sym] = addr;
+    try { localStorage.setItem('p2p_wallets', JSON.stringify(savedWallets)); } catch(e){}
+    apiFetch('/api/wallets', {method:'POST', body:{wallet_type:sym, address:addr}}).catch(function(){});
+    renderWallet();
+  }
+}
+
+function initCoin3D() {
+  var wrap = document.getElementById('coin3d-wrap');
+  var coin = document.getElementById('coin3d');
+  if (!wrap || !coin) return;
+  var isDragging = false;
+  wrap.addEventListener('pointerdown', function(e) { isDragging = true; coin.classList.add('interacting'); });
+  window.addEventListener('pointerup', function() { isDragging = false; coin.classList.remove('interacting'); coin.style.transform = ''; });
+  wrap.addEventListener('pointermove', function(e) {
+    if (!isDragging) return;
+    var rect = wrap.getBoundingClientRect();
+    var x = ((e.clientX - rect.left) / rect.width - 0.5) * 40;
+    var y = ((e.clientY - rect.top) / rect.height - 0.5) * -40;
+    coin.style.transform = 'rotateY('+x+'deg) rotateX('+y+'deg)';
+  });
+}
+
+// CREATE ORDER WIZARD
+var coData = {step:1, role:'', participantUid:'', participantName:'', asset:'', assetName:'', assetType:'', currency:'', currencyName:'', currencyType:'', links:[], amount:''};
+var coS3Tab = 'crypto';
+var coS4Tab = 'crypto';
+var coTimerInterval = null;
+var coLinkCount = 1;
+
+function initCoWizard() {
+  coData = {step:1, role:'', participantUid:'', participantName:'', asset:'', assetName:'', assetType:'', currency:'', currencyName:'', currencyType:'', links:[], amount:''};
+  coS3Tab = 'crypto'; coS4Tab = 'crypto'; coLinkCount = 1;
+  if (coTimerInterval) { clearInterval(coTimerInterval); coTimerInterval = null; }
+  coShowStep(1);
+  coUpdateLabels();
+}
+
+function coUpdateLabels() {
+  document.getElementById('lbl-create-order').textContent = t('create_order');
+  document.getElementById('co-q1').textContent = t('co_q1');
+  document.getElementById('co-lbl-buyer').textContent = t('co_buyer');
+  document.getElementById('co-lbl-seller').textContent = t('co_seller');
+}
+
+function coShowStep(n) {
+  coData.step = n;
+  for (var i = 1; i <= 8; i++) {
+    var el = document.getElementById('co-step-'+i);
+    if (el) el.className = 'co-step' + (i === n ? ' active' : '');
+  }
+  var dots = '';
+  for (var d = 1; d <= 8; d++) {
+    var cls = d < n ? 'done' : (d === n ? 'active' : '');
+    dots += '<div class="co-dot '+cls+'"></div>';
+  }
+  document.getElementById('co-dots').innerHTML = dots;
+
+  if (n === 2) coRenderStep2();
+  if (n === 3) coRenderStep3();
+  if (n === 4) coRenderStep4();
+  if (n === 5) coRenderStep5();
+  if (n === 6) coRenderStep6();
+  if (n === 7) coRenderStep7();
+  if (n === 8) coRenderStep8();
+}
+
+function coBack() {
+  if (coData.step <= 1) { showPage('home'); return; }
+  if (coData.step === 8) { showPage('home'); return; }
+  coShowStep(coData.step - 1);
+}
+
+function coGoStep(n) {
+  if (n === 6) {
+    var hasLink = false;
+    for (var i = 0; i < coLinkCount; i++) {
+      var inp = document.getElementById('co-link-'+i);
+      if (inp && inp.value.trim()) {
+        if (!isValidUrl(inp.value.trim())) { inp.style.borderColor='var(--red)'; return; }
+        inp.style.borderColor='';
+        hasLink = true;
+      }
+    }
+  }
+  if (n === 7) {
+    var amtEl = document.getElementById('co-amt-input');
+    var amt = parseFloat(amtEl ? amtEl.value : '');
+    if (isNaN(amt) || amt <= 0) { if (amtEl) amtEl.style.borderColor='var(--red)'; return; }
+    if (amtEl) amtEl.style.borderColor='';
+  }
+  coShowStep(n);
+}
+
+function coPickRole(role) {
+  coData.role = role;
+  coShowStep(2);
+}
+
+// Step 2: Participant ID
+function coRenderStep2() {
+  document.getElementById('co-q2').textContent = t('co_q2_uid');
+  document.getElementById('co-s2-next').textContent = t('co_uid_verify');
+  document.getElementById('co-uid-input').value = '';
+  document.getElementById('co-uid-input').className = 'co-uid-input';
+  document.getElementById('co-uid-status').innerHTML = '';
+  document.getElementById('co-uid-status').className = 'co-uid-status';
+  document.getElementById('co-s2-next').disabled = true;
+  document.getElementById('co-uid-input').setAttribute('placeholder', t('co_uid_placeholder'));
+
+  document.getElementById('co-uid-input').addEventListener('input', function() {
+    var val = this.value.replace(/\D/g, '').slice(0, 8);
+    this.value = val;
+    var btn = document.getElementById('co-s2-next');
+    btn.disabled = val.length < 8;
+    if (val.length < 8) {
+      document.getElementById('co-uid-status').innerHTML = '';
+      document.getElementById('co-uid-status').className = 'co-uid-status';
+      this.className = 'co-uid-input';
+    }
+  });
+}
+
+function coValidateUID() {
+  var inp = document.getElementById('co-uid-input');
+  var uid = parseInt(inp.value, 10);
+  var statusEl = document.getElementById('co-uid-status');
+
+  if (uid === user.uid) {
+    inp.className = 'co-uid-input invalid';
+    statusEl.className = 'co-uid-status notfound';
+    statusEl.innerHTML = '<span>&#10007; '+t('co_uid_self')+'</span>';
+    return;
+  }
+
+  statusEl.innerHTML = '<span style="color:var(--t2)">...</span>';
+  apiFetch('/api/users/by-uid/' + uid).then(function(found) {
+    inp.className = 'co-uid-input valid';
+    statusEl.className = 'co-uid-status found';
+    var letter = (found.first_name || 'U')[0].toUpperCase();
+    statusEl.innerHTML = '<div class="uid-user-info"><div class="uid-user-avatar">'+letter+'</div>'+
+      '<span>'+escapeHtml(found.first_name)+' (@'+escapeHtml(found.username)+')</span></div>';
+    coData.participantUid = String(uid);
+    coData.participantId = found.id;
+    coData.participantName = found.first_name + ' (@' + found.username + ')';
+    setTimeout(function() { coShowStep(3); }, 600);
+  }).catch(function() {
+    inp.className = 'co-uid-input invalid';
+    statusEl.className = 'co-uid-status notfound';
+    statusEl.innerHTML = '<span>&#10007; '+t('co_uid_notfound')+'</span>';
+  });
+}
+
+// Step 3: Asset selection
+function coRenderStep3() {
+  var q = coData.role === 'buy' ? t('co_q3_buy') : t('co_q3_sell');
+  document.getElementById('co-q3').textContent = q;
+  document.getElementById('co-s3-tab-crypto').textContent = t('co_crypto_tab');
+  document.getElementById('co-s3-tab-fiat').textContent = t('co_fiat_tab');
+  document.getElementById('co-s3-tab-crypto').className = 'co-tab' + (coS3Tab==='crypto'?' active':'');
+  document.getElementById('co-s3-tab-fiat').className = 'co-tab' + (coS3Tab==='fiat'?' active':'');
+  coRenderCurList('co-s3-list', coS3Tab, 'coPickAsset');
+}
+
+// Step 4: Currency selection
+function coRenderStep4() {
+  document.getElementById('co-q4').textContent = t('co_q4');
+  document.getElementById('co-bal-lbl').textContent = t('co_total_bal');
+  document.getElementById('co-bal-amt').textContent = '$0.00';
+  document.getElementById('co-s4-tab-crypto').textContent = t('co_crypto_tab');
+  document.getElementById('co-s4-tab-fiat').textContent = t('co_fiat_tab');
+  document.getElementById('co-s4-tab-crypto').className = 'co-tab' + (coS4Tab==='crypto'?' active':'');
+  document.getElementById('co-s4-tab-fiat').className = 'co-tab' + (coS4Tab==='fiat'?' active':'');
+  coRenderCurList('co-s4-list', coS4Tab, 'coPickCurrency', true);
+}
+
+// Step 5: Links
+function coRenderStep5() {
+  document.getElementById('co-q5').textContent = t('co_q5');
+  document.getElementById('co-add-link-btn').textContent = t('co_add_link');
+  document.getElementById('co-s5-next').textContent = t('co_next');
+  var wrap = document.getElementById('co-links-wrap');
+  wrap.innerHTML = '<input type="url" class="co-link-input" id="co-link-0" placeholder="https://...">';
+  coLinkCount = 1;
+}
+
+// Step 6: Amount
+function coRenderStep6() {
+  var q = coData.role === 'buy' ? t('co_q6_buy') : t('co_q6_sell');
+  document.getElementById('co-q6').textContent = q;
+  document.getElementById('co-amt-cur').textContent = coData.currency;
+  document.getElementById('co-amt-input').value = '';
+  document.getElementById('co-s6-next').textContent = t('co_next');
+}
+
+// Step 7: Confirm
+function coRenderStep7() {
+  document.getElementById('co-confirm-warn').textContent = t('co_confirm_warn');
+  document.getElementById('co-cfm-ok').textContent = t('co_confirm');
+  document.getElementById('co-cfm-no').textContent = t('co_cancel');
+
+  var amtVal = document.getElementById('co-amt-input');
+  coData.amount = amtVal ? amtVal.value : '';
+  coData.links = [];
+  for (var i = 0; i < coLinkCount; i++) {
+    var inp = document.getElementById('co-link-'+i);
+    if (inp && inp.value.trim()) coData.links.push(inp.value.trim());
+  }
+
+  var roleLabel = coData.role === 'buy' ? t('co_buyer') : t('co_seller');
+  var html = '<div class="co-confirm-row"><span class="lbl">'+escapeHtml(t('co_role'))+'</span><span class="val">'+escapeHtml(roleLabel)+'</span></div>'+
+    '<div class="co-confirm-row"><span class="lbl">'+escapeHtml(t('co_participant'))+'</span><span class="val">'+escapeHtml(coData.participantName)+' ('+escapeHtml(coData.participantUid)+')</span></div>'+
+    '<div class="co-confirm-row"><span class="lbl">'+escapeHtml(t('co_asset'))+'</span><span class="val">'+escapeHtml(coData.assetName)+' ('+escapeHtml(coData.asset)+')</span></div>'+
+    '<div class="co-confirm-row"><span class="lbl">'+escapeHtml(t('co_currency'))+'</span><span class="val">'+escapeHtml(coData.currencyName)+' ('+escapeHtml(coData.currency)+')</span></div>';
+  if (coData.links.length) {
+    html += '<div class="co-confirm-row"><span class="lbl">'+escapeHtml(t('co_links_lbl'))+'</span><span class="val">'+coData.links.map(escapeHtml).join('<br>')+'</span></div>';
+  }
+  html += '<div class="co-confirm-row"><span class="lbl">'+escapeHtml(t('co_amount_lbl'))+'</span><span class="val">'+escapeHtml(coData.amount)+' '+escapeHtml(coData.currency)+'</span></div>';
+  document.getElementById('co-confirm-data').innerHTML = html;
+
+  var okBtn = document.getElementById('co-cfm-ok');
+  var noBtn = document.getElementById('co-cfm-no');
+  okBtn.classList.add('disabled'); okBtn.disabled = true;
+  noBtn.classList.add('disabled'); noBtn.disabled = true;
+
+  var sec = 5;
+  document.getElementById('co-timer-txt').textContent = t('co_timer_wait', {s: sec});
+  if (coTimerInterval) clearInterval(coTimerInterval);
+  coTimerInterval = setInterval(function() {
+    sec--;
+    if (sec <= 0) {
+      clearInterval(coTimerInterval); coTimerInterval = null;
+      document.getElementById('co-timer-txt').textContent = '';
+      okBtn.classList.remove('disabled'); okBtn.disabled = false;
+      noBtn.classList.remove('disabled'); noBtn.disabled = false;
+    } else {
+      document.getElementById('co-timer-txt').textContent = t('co_timer_wait', {s: sec});
+    }
+  }, 1000);
+}
+
+// Step 8: Success
+function coRenderStep8() {
+  document.getElementById('co-ok-title').textContent = t('co_success');
+  document.getElementById('co-ok-msg').textContent = t('co_success_msg');
+}
+
+function coSubmit() { coShowStep(8); }
+function coCancel() { showPage('home'); }
+
+function coSetTab(step, tab) {
+  if (step === 3) { coS3Tab = tab; coRenderStep3(); }
+  if (step === 4) { coS4Tab = tab; coRenderStep4(); }
+}
+
+function coAddLink() {
+  var wrap = document.getElementById('co-links-wrap');
+  var inp = document.createElement('input');
+  inp.type = 'url'; inp.className = 'co-link-input';
+  inp.id = 'co-link-' + coLinkCount; inp.placeholder = 'https://...';
+  wrap.appendChild(inp);
+  coLinkCount++;
+}
+
+function coPickAsset(sym, name, type) {
+  coData.asset = sym; coData.assetName = name; coData.assetType = type;
+  coShowStep(4);
+}
+
+function coPickCurrency(sym, name, type) {
+  coData.currency = sym; coData.currencyName = name; coData.currencyType = type;
+  coShowStep(5);
+}
+
+function coRenderCurList(containerId, tab, handler, showBal) {
+  var el = document.getElementById(containerId);
+  if (tab === 'crypto') {
+    el.innerHTML = walletCryptos.map(function(c) {
+      var fb = cryptoFallback[c.sym] || c.sym[0];
+      var balHtml = showBal ? '<div class="co-cur-bal"><div class="co-cur-bal-val">0.00 '+c.sym+'</div><div class="co-cur-bal-usd">$0.00</div></div>' : '';
+      return '<div class="co-cur-item" onclick="'+handler+'(\''+c.sym+'\',\''+c.name+'\',\'crypto\')">'+
+        '<img class="co-cur-icon" src="'+c.icon+'" alt="'+c.sym+'" onerror="this.outerHTML=\'<div class=co-cur-flag>'+fb+'</div>\'">'+
+        '<div class="co-cur-info"><div class="co-cur-name">'+c.name+'</div><div class="co-cur-sym">'+c.sym+'</div></div>'+
+        balHtml+'</div>';
+    }).join('');
+  } else {
+    el.innerHTML = walletFiats.map(function(f) {
+      var balHtml = showBal ? '<div class="co-cur-bal"><div class="co-cur-bal-val">0.00 '+f.sym+'</div></div>' : '';
+      return '<div class="co-cur-item" onclick="'+handler+'(\''+f.sym+'\',\''+f.name+'\',\'fiat\')">'+
+        '<div class="co-cur-flag">'+f.flag+'</div>'+
+        '<div class="co-cur-info"><div class="co-cur-name">'+f.name+'</div><div class="co-cur-sym">'+f.sym+'</div></div>'+
+        balHtml+'</div>';
+    }).join('');
+  }
+}
+
+// ═══ DEAL (ESCROW FLOW) ═══
+var dealTimeLeft = 1800;
+var escrowSteps = ['awaiting_payment','paid','payment_confirmed','goods_sent','completed'];
+var escrowLabels = ['escrow_s1','escrow_s2','escrow_s3','escrow_s4'];
+var escrowIcons = ['💳','🔍','📦','✅'];
+
+function getEscrowStep(status) {
+  var idx = escrowSteps.indexOf(status);
+  if (idx <= 0) return 0;
+  if (idx >= 4) return 4;
+  return idx;
+}
+
+function openDeal(id) {
+  apiFetch('/api/deals/' + id).then(function(deal) {
+    currentDeal = deal;
+    dealTimeLeft = 1800;
+    return apiFetch('/api/deals/' + id + '/messages');
+  }).then(function(r) {
+    chatMessages = r.messages || [];
+    renderDeal();
+    showPage('deal');
+  }).catch(function(e) {
+    var local = deals.find(function(d) { return d.id === id; });
+    if (local) {
+      currentDeal = Object.assign({}, local);
+      dealTimeLeft = 1800;
+      chatMessages = [];
+      renderDeal();
+      showPage('deal');
+    }
+  });
+}
+
+function openDealFromOrder(orderId) {
+  currentDeal = {id: deals.length+1, order_id:orderId, buyer_id:1, seller_id:2,
+    crypto_currency:'USDT', fiat_currency:'RUB', price:0, crypto_amount:0,
+    fiat_amount:0, status:'awaiting_payment', created_at:new Date().toISOString()};
+  var order = orders.find(function(o) { return o.id === orderId; });
+  if (order) {
+    currentDeal.crypto_currency = order.crypto_currency;
+    currentDeal.fiat_currency = order.fiat_currency;
+    currentDeal.price = order.price;
+  }
+  dealTimeLeft = 1800;
+  chatMessages = [];
+  renderDeal();
+  showPage('deal');
+}
+
+function renderDeal() {
+  if (!currentDeal) return;
+  var d = currentDeal;
+  var isBuyer = d.buyer_id === user.id;
+  var step = getEscrowStep(d.status);
+
+  document.getElementById('deal-title').textContent = t('deal_title',{id:String(d.id)});
+  document.getElementById('deal-badge').innerHTML = '<span class="badge badge-'+escapeHtml(d.status)+'">'+t(d.status)+'</span>';
+
+  // Escrow Stepper
+  var stepperHtml = '<div class="escrow-lines">';
+  for (var li = 0; li < 3; li++) {
+    var lCls = li < step ? 'done' : (li === step - 1 ? 'active' : '');
+    stepperHtml += '<div class="escrow-line '+lCls+'"></div>';
+  }
+  stepperHtml += '</div>';
+  for (var si = 0; si < 4; si++) {
+    var circleCls = si < step ? 'done' : (si === step && step < 4 ? 'active' : '');
+    var labelCls = si < step ? 'done' : (si === step && step < 4 ? 'active' : '');
+    var circleContent = si < step ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/></svg>' : String(si+1);
+    stepperHtml += '<div class="escrow-step"><div class="escrow-circle '+circleCls+'">'+circleContent+'</div>'+
+      '<div class="escrow-step-label '+labelCls+'">'+t(escrowLabels[si])+'</div></div>';
+  }
+  document.getElementById('escrow-stepper').innerHTML = stepperHtml;
+
+  // Deal info card
+  document.getElementById('deal-info').innerHTML =
+    '<div class="row"><span class="label">'+t('crypto')+'</span><span class="value">'+escapeHtml(d.crypto_currency)+'</span></div>'+
+    '<div class="row"><span class="label">'+t('fiat')+'</span><span class="value">'+escapeHtml(d.fiat_currency)+'</span></div>'+
+    '<div class="row"><span class="label">'+t('price')+'</span><span class="value">'+d.price.toLocaleString()+' '+escapeHtml(d.fiat_currency)+'</span></div>'+
+    '<div class="row"><span class="label">'+t('amount')+'</span><span class="value">'+d.crypto_amount+' '+escapeHtml(d.crypto_currency)+'</span></div>'+
+    '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;display:flex;justify-content:space-between;align-items:center">'+
+      '<span style="color:var(--t2);font-size:13px">'+t('total')+'</span>'+
+      '<span style="font-size:18px;font-weight:700">'+d.fiat_amount.toLocaleString()+' '+escapeHtml(d.fiat_currency)+'</span></div>';
+
+  // Timer
+  if (d.status === 'awaiting_payment') {
+    document.getElementById('deal-timer').innerHTML = '<div class="timer-box">'+
+      '<div class="label">'+t('time_left')+'</div>'+
+      '<div class="time" id="timer-display">'+fmtTime(dealTimeLeft)+'</div></div>';
+    if (dealTimerInterval) clearInterval(dealTimerInterval);
+    dealTimerInterval = setInterval(function() {
+      dealTimeLeft = Math.max(0, dealTimeLeft - 1);
+      var el = document.getElementById('timer-display');
+      if (el) el.textContent = fmtTime(dealTimeLeft);
+    }, 1000);
+  } else {
+    document.getElementById('deal-timer').innerHTML = '';
+    if (dealTimerInterval) clearInterval(dealTimerInterval);
+  }
+
+  // Escrow detail card
+  var detailWrap = document.getElementById('escrow-detail-wrap');
+
+  if (d.status === 'completed') {
+    detailWrap.innerHTML = '<div class="escrow-detail"><div class="escrow-done-card">'+
+      '<div class="escrow-done-check"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>'+
+      '<div class="escrow-done-title">'+t('escrow_done')+'</div>'+
+      '<div class="escrow-done-msg">'+t('escrow_done_msg')+'</div></div></div>';
+    document.getElementById('deal-actions').innerHTML = '';
+  } else if (d.status === 'cancelled') {
+    detailWrap.innerHTML = '';
+    document.getElementById('deal-actions').innerHTML = '';
+  } else {
+    var stepIdx = step;
+    var stepNum = stepIdx + 1;
+    var iconCls = 'step' + stepNum;
+    var icon = escrowIcons[stepIdx];
+    var title = t(escrowLabels[stepIdx]);
+    var descKey = 'escrow_s' + stepNum + '_' + (isBuyer ? 'buyer' : 'seller');
+    var desc = t(descKey);
+    var subtitle = isBuyer ? t('buyer') : t('seller');
+
+    detailWrap.innerHTML = '<div class="escrow-detail">'+
+      '<div class="escrow-detail-header">'+
+        '<div class="escrow-detail-icon '+iconCls+'">'+icon+'</div>'+
+        '<div><div class="escrow-detail-title">'+escapeHtml(title)+'</div>'+
+        '<div class="escrow-detail-sub">'+escapeHtml(subtitle)+'</div></div></div>'+
+      '<div class="escrow-detail-body">'+
+        '<div class="escrow-detail-desc">'+desc+'</div>'+
+        '<div id="escrow-actions-inner"></div>'+
+      '</div></div>';
+
+    var actionsInner = document.getElementById('escrow-actions-inner');
+    var actHtml = '';
+
+    if (d.status === 'awaiting_payment') {
+      if (isBuyer) {
+        actHtml = '<button class="escrow-action-btn primary" onclick="dealEscrowAction(\'paid\')">'+t('btn_payment_sent')+'</button>'+
+          '<button class="escrow-action-btn danger" onclick="dealCancel()">'+t('btn_cancel')+'</button>';
+      } else {
+        actHtml = '<div class="escrow-waiting"><div class="escrow-waiting-dot"></div><div class="escrow-waiting-text">'+t('waiting_payment')+'</div></div>';
+      }
+    } else if (d.status === 'paid') {
+      if (!isBuyer) {
+        actHtml = '<button class="escrow-action-btn primary" onclick="dealEscrowAction(\'payment_confirmed\')">'+t('btn_payment_received')+'</button>'+
+          '<button class="escrow-action-btn danger" onclick="dealDispute()">'+t('btn_dispute')+'</button>';
+      } else {
+        actHtml = '<div class="escrow-waiting"><div class="escrow-waiting-dot"></div><div class="escrow-waiting-text">'+t('waiting_verify')+'</div></div>';
+      }
+    } else if (d.status === 'payment_confirmed') {
+      if (!isBuyer) {
+        actHtml = '<button class="escrow-action-btn primary" onclick="dealEscrowAction(\'goods_sent\')">'+t('btn_goods_sent')+'</button>';
+      } else {
+        actHtml = '<div class="escrow-waiting"><div class="escrow-waiting-dot"></div><div class="escrow-waiting-text">'+t('waiting_shipment')+'</div></div>';
+      }
+    } else if (d.status === 'goods_sent') {
+      if (isBuyer) {
+        actHtml = '<button class="escrow-action-btn primary" onclick="dealEscrowAction(\'completed\')">'+t('btn_confirm_receipt')+'</button>'+
+          '<button class="escrow-action-btn danger" onclick="dealDispute()">'+t('btn_dispute')+'</button>';
+      } else {
+        actHtml = '<div class="escrow-waiting"><div class="escrow-waiting-dot"></div><div class="escrow-waiting-text">'+t('waiting_receipt')+'</div></div>';
+      }
+    }
+    actionsInner.innerHTML = actHtml;
+    document.getElementById('deal-actions').innerHTML = '';
+  }
+
+  // Chat
+  document.getElementById('lbl-chat').textContent = t('chat');
+  document.getElementById('btn-chat-send').textContent = t('send');
+  renderChat();
+}
+
+function dealEscrowAction(newStatus) {
+  if (!currentDeal) return;
+  var endpoint = '';
+  if (newStatus === 'paid') endpoint = '/api/deals/' + currentDeal.id + '/pay';
+  else if (newStatus === 'completed') endpoint = '/api/deals/' + currentDeal.id + '/confirm';
+  else return;
+  apiFetch(endpoint, {method:'PUT'}).then(function() {
+    currentDeal.status = newStatus;
+    renderDeal();
+  }).catch(function(e) {
+    showToast('error', 'Error', e.detail || 'Action failed');
+  });
+}
+
+function fmtTime(s) {
+  return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+}
+function dealCancel() {
+  if (!currentDeal) return;
+  apiFetch('/api/deals/' + currentDeal.id + '/cancel', {method:'PUT'}).then(function() {
+    currentDeal.status = 'cancelled';
+    renderDeal();
+  }).catch(function(e) { showToast('error', 'Error', e.detail || 'Cannot cancel'); });
+}
+function dealDispute() { if (!currentDeal) return; currentDeal.status = 'disputed'; renderDeal(); }
+
+function renderChat() {
+  var el = document.getElementById('chat-messages');
+  el.innerHTML = chatMessages.map(function(m) {
+    var mine = m.sender_id === user.id;
+    return '<div class="chat-msg '+(mine?'mine':'other')+'">'+
+      (!mine ? '<div class="sender">'+escapeHtml(m.first_name||'User')+'</div>' : '')+
+      '<div>'+escapeHtml(m.text)+'</div>'+
+      '<div class="time">'+new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+'</div></div>';
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function sendChatMsg() {
+  var input = document.getElementById('chat-input');
+  var text = input.value.trim();
+  if (!text || !currentDeal) return;
+  input.value = '';
+  apiFetch('/api/deals/' + currentDeal.id + '/messages', {method:'POST', body:{text:text}}).then(function(msg) {
+    chatMessages.push(msg);
+    renderChat();
+  }).catch(function() {
+    chatMessages.push({id:Date.now(), sender_id:user.id, first_name:user.first_name,
+      text:text, created_at:new Date().toISOString()});
+    renderChat();
+  });
+}
+
+// PROFILE
+function renderProfile() {
+  var letter = (user.first_name||'U')[0].toUpperCase();
+  document.getElementById('prof-avatar').textContent = letter;
+  document.getElementById('prof-name').textContent = user.first_name;
+  document.getElementById('prof-username').textContent = user.username ? '@'+user.username : '';
+  document.getElementById('prof-uid').textContent = String(user.uid);
+  var statusBadge = document.getElementById('prof-status-badge');
+  var isMerchant = user.status === 'Merchant';
+  statusBadge.className = 'user-status-badge ' + (isMerchant ? 'merchant' : 'beginner');
+  document.getElementById('prof-status-text').textContent = user.status || 'Beginner';
+  document.getElementById('lbl-profile-title').textContent = t('profile');
+  document.getElementById('lbl-language').textContent = t('language') + ':';
+  document.getElementById('lbl-theme').textContent = t('theme') + ':';
+  document.getElementById('prof-orders-btn').textContent = t('my_orders');
+  document.getElementById('prof-deals-btn').textContent = t('my_deals');
+
+  document.getElementById('lang-en').className = 'lang-btn' + (locale==='en'?' active':'');
+  document.getElementById('lang-ru').className = 'lang-btn' + (locale==='ru'?' active':'');
+  document.getElementById('theme-dark').className = 'lang-btn' + (appTheme==='dark'?' active':'');
+  document.getElementById('theme-light').className = 'lang-btn' + (appTheme==='light'?' active':'');
+  document.getElementById('theme-dark').textContent = t('theme_dark');
+  document.getElementById('theme-light').textContent = t('theme_light');
+
+  document.getElementById('lbl-success-rate').textContent = t('success_rate');
+  document.getElementById('lbl-sr-done').textContent = t('sr_done');
+  document.getElementById('lbl-sr-cancel').textContent = t('sr_cancel');
+  document.getElementById('lbl-sr-dispute').textContent = t('sr_dispute');
+  document.getElementById('lbl-activity').textContent = t('activity');
+  document.getElementById('lbl-last30').textContent = t('last_30');
+
+  document.getElementById('lbl-notif-title').textContent = t('notif_title');
+  document.getElementById('lbl-notif-deal').textContent = t('notif_deal');
+  document.getElementById('lbl-notif-pay').textContent = t('notif_pay');
+  document.getElementById('lbl-notif-dispute').textContent = t('notif_dispute');
+  document.getElementById('lbl-notif-complete').textContent = t('notif_complete');
+
+  renderNotifToggles();
+  renderStats();
+  renderSuccessRate();
+  renderActivityChart();
+  renderProfileTab();
+}
+
+function renderStats() {
+  var totalDeals = deals.length;
+  var completedDeals = deals.filter(function(d) { return d.status === 'completed'; }).length;
+  var activeDeals = deals.filter(function(d) { return d.status !== 'completed' && d.status !== 'cancelled'; }).length;
+  var turnover = deals.reduce(function(sum, d) { return sum + (d.fiat_amount || 0); }, 0);
+
+  document.getElementById('stat-total').textContent = totalDeals;
+  document.getElementById('stat-turnover').textContent = '$' + turnover.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:2});
+  document.getElementById('stat-completed').textContent = completedDeals;
+  document.getElementById('stat-active').textContent = activeDeals;
+
+  document.getElementById('lbl-stat-total').textContent = t('stat_total');
+  document.getElementById('lbl-stat-turnover').textContent = t('stat_turnover');
+  document.getElementById('lbl-stat-completed').textContent = t('stat_completed');
+  document.getElementById('lbl-stat-active').textContent = t('stat_active');
+}
+
+function renderSuccessRate() {
+  var total = deals.length;
+  var completed = deals.filter(function(d) { return d.status === 'completed'; }).length;
+  var cancelled = deals.filter(function(d) { return d.status === 'cancelled'; }).length;
+  var disputed = deals.filter(function(d) { return d.status === 'disputed'; }).length;
+  var pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  document.getElementById('success-pct').textContent = pct + '%';
+  document.getElementById('sr-done-val').textContent = completed;
+  document.getElementById('sr-cancel-val').textContent = cancelled;
+  document.getElementById('sr-dispute-val').textContent = disputed;
+
+  var circ = 314.16;
+  var offset = circ * (1 - pct / 100);
+  var arc = document.getElementById('success-arc');
+  if (arc) {
+    arc.style.transition = 'stroke-dashoffset 1s ease';
+    setTimeout(function() { arc.setAttribute('stroke-dashoffset', offset); }, 100);
+  }
+}
+
+function renderActivityChart() {
+  var el = document.getElementById('activity-bars');
+  var daily = [];
+  var now = new Date();
+  for (var i = 29; i >= 0; i--) {
+    var day = new Date(now); day.setDate(day.getDate() - i);
+    var dayStr = day.toISOString().split('T')[0];
+    var count = deals.filter(function(d) {
+      return d.created_at && d.created_at.split('T')[0] === dayStr;
+    }).length;
+    daily.push(count);
+  }
+  var max = Math.max.apply(null, daily) || 1;
+
+  el.innerHTML = daily.map(function(v, idx) {
+    var h = Math.max(2, (v / max) * 70);
+    var color = v > 0 ? 'var(--yellow)' : 'var(--bg2)';
+    var today = idx === 29;
+    if (today && v > 0) color = 'var(--green)';
+    return '<div class="activity-bar" style="height:'+h+'px;background:'+color+'" title="'+v+'"></div>';
+  }).join('');
+}
+
+function setTheme(th) {
+  appTheme = th;
+  try { localStorage.setItem('p2p_theme', th); } catch(e){}
+  if (th === 'light') {
+    document.documentElement.setAttribute('data-theme','light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  try {
+    var bgColor = th === 'light' ? '#FAFAFA' : '#0B0E11';
+    Telegram.WebApp.setHeaderColor(bgColor);
+    Telegram.WebApp.setBackgroundColor(bgColor);
+  } catch(e){}
+  document.getElementById('theme-dark').className = 'lang-btn' + (th==='dark'?' active':'');
+  document.getElementById('theme-light').className = 'lang-btn' + (th==='light'?' active':'');
+}
+
+function toggleNotif(key) {
+  notifSettings[key] = !notifSettings[key];
+  try { localStorage.setItem('p2p_notifs', JSON.stringify(notifSettings)); } catch(e){}
+  renderNotifToggles();
+}
+
+function renderNotifToggles() {
+  ['deal','pay','dispute','complete'].forEach(function(k) {
+    var el = document.getElementById('ntog-'+k);
+    if (el) el.className = 'notif-toggle' + (notifSettings[k] ? ' on' : '');
+  });
+}
+
+function setProfileTab(tab) {
+  profileTab = tab;
+  document.getElementById('prof-orders-btn').className = 'toggle-btn' + (tab==='orders'?' active-yellow':'');
+  document.getElementById('prof-deals-btn').className = 'toggle-btn' + (tab==='deals'?' active-yellow':'');
+  renderProfileTab();
+}
+
+function renderProfileTab() {
+  var el = document.getElementById('prof-tab-content');
+  if (profileTab === 'orders') {
+    el.innerHTML = '<div class="empty">'+t('no_orders')+'</div>';
+  } else {
+    if (!deals.length) { el.innerHTML = '<div class="empty">'+t('no_txn')+'</div>'; return; }
+    el.innerHTML = deals.map(function(d) {
+      return '<div class="order-card" onclick="openDeal('+parseInt(d.id)+')" style="cursor:pointer">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center">'+
+          '<div><span style="font-size:14px;font-weight:500">'+escapeHtml(d.crypto_currency)+'/'+escapeHtml(d.fiat_currency)+'</span>'+
+            '<span style="color:var(--t2);font-size:12px;margin-left:8px">#'+parseInt(d.id)+'</span></div>'+
+          '<span class="badge badge-'+escapeHtml(d.status)+'">'+t(d.status)+'</span></div>'+
+        '<div style="display:flex;justify-content:space-between;margin-top:8px;color:var(--t2);font-size:12px">'+
+          '<span>'+d.crypto_amount+' '+escapeHtml(d.crypto_currency)+'</span>'+
+          '<span>'+d.fiat_amount.toLocaleString()+' '+escapeHtml(d.fiat_currency)+'</span></div></div>';
+    }).join('');
+  }
+}
+
+function setLang(l) {
+  locale = l;
+  try { localStorage.setItem('p2p_locale', l); } catch(e){}
+  updateNavLabels();
+  if (currentPage === 'home') renderHome();
+  if (currentPage === 'wallet') renderWallet();
+  if (currentPage === 'profile') renderProfile();
+}
+
+function updateNavLabels() {
+  document.querySelector('#nav-home span').textContent = t('nav.home');
+  document.querySelector('#nav-wallet span').textContent = t('nav.wallet');
+  document.querySelector('#nav-profile span').textContent = t('nav.profile');
+}
+
+
+// INIT
+window.addEventListener('DOMContentLoaded', function() {
+  if (APP_NAME) document.title = APP_NAME;
+
+  setTimeout(function() {
+    document.getElementById('splash').style.opacity = '0';
+    document.getElementById('splash').style.transition = 'opacity .3s';
+    setTimeout(function() {
+      document.getElementById('splash').style.display = 'none';
+      document.getElementById('bottom-nav').style.display = 'flex';
+      updateNavLabels();
+      showPage('home');
+      fetchMarkets();
+      setInterval(fetchMarkets, 60000);
+      initCoin3D();
+    }, 300);
+  }, 2000);
+
+  document.getElementById('chat-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') sendChatMsg();
+  });
+});
+</script>
+
+<!-- TOAST NOTIFICATION -->
+<div class="toast-overlay" id="toast-overlay" onclick="closeToast()">
+  <div class="toast-box" onclick="event.stopPropagation()">
+    <div class="toast-circle error" id="toast-circle">
+      <svg viewBox="0 0 24 24" id="toast-icon">
+        <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
+      </svg>
+    </div>
+    <div class="toast-title" id="toast-title"></div>
+    <div class="toast-msg" id="toast-msg"></div>
+    <button class="toast-btn" onclick="closeToast()">OK</button>
+  </div>
+</div>
+
+<!-- DEPOSIT/WITHDRAW MODAL -->
+<div class="dw-modal-overlay" id="dw-modal-overlay" onclick="closeDWModal()">
+  <div class="dw-modal" onclick="event.stopPropagation()">
+    <div class="dw-modal-handle"></div>
+    <div class="dw-modal-title" id="dw-modal-title"></div>
+    <div class="dw-section-title" id="dw-section-crypto"></div>
+    <div id="dw-crypto-list"></div>
+    <div class="dw-section-title" id="dw-section-fiat"></div>
+    <div id="dw-fiat-list"></div>
+  </div>
+</div>
+
+<script>
+// ═══ TOAST ═══
+function showToast(type, title, msg) {
+  var overlay = document.getElementById('toast-overlay');
+  var circle = document.getElementById('toast-circle');
+  var icon = document.getElementById('toast-icon');
+  circle.className = 'toast-circle ' + type;
+  if (type === 'error') {
+    icon.innerHTML = '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>';
+  } else {
+    icon.innerHTML = '<polyline points="4,12 10,18 20,6"/>';
+  }
+  document.getElementById('toast-title').textContent = title;
+  document.getElementById('toast-msg').textContent = msg;
+  overlay.classList.add('visible');
+}
+function closeToast() {
+  document.getElementById('toast-overlay').classList.remove('visible');
+}
+
+// ═══ DEPOSIT / WITHDRAW MODAL ═══
+var dwMode = 'deposit';
+
+function openDWModal(mode) {
+  dwMode = mode;
+  var overlay = document.getElementById('dw-modal-overlay');
+  document.getElementById('dw-modal-title').textContent = mode === 'deposit' ? t('deposit') : t('withdraw');
+  document.getElementById('dw-section-crypto').textContent = t('crypto_currencies');
+  document.getElementById('dw-section-fiat').textContent = t('fiat_currencies');
+
+  var cryptoHtml = walletCryptos.map(function(c) {
+    var fb = cryptoFallback[c.sym] || c.sym[0];
+    return '<div class="dw-item" onclick="dwSelectCurrency(\''+c.sym+'\',\'crypto\')">'+
+      '<img class="dw-item-icon" src="'+c.icon+'" alt="'+c.sym+'" onerror="this.outerHTML=\'<div class=dw-item-icon-fb>'+fb+'</div>\'">'+
+      '<div class="dw-item-info"><div class="dw-item-name">'+c.name+'</div><div class="dw-item-sym">'+c.sym+'</div></div>'+
+      '<div class="dw-item-arrow"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9,6 15,12 9,18"/></svg></div></div>';
+  }).join('');
+  document.getElementById('dw-crypto-list').innerHTML = cryptoHtml;
+
+  var fiatHtml = walletFiats.map(function(f) {
+    return '<div class="dw-item" onclick="dwSelectCurrency(\''+f.sym+'\',\'fiat\')">'+
+      '<div class="dw-item-icon-fb">'+f.flag+'</div>'+
+      '<div class="dw-item-info"><div class="dw-item-name">'+f.name+'</div><div class="dw-item-sym">'+f.sym+'</div></div>'+
+      '<div class="dw-item-arrow"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9,6 15,12 9,18"/></svg></div></div>';
+  }).join('');
+  document.getElementById('dw-fiat-list').innerHTML = fiatHtml;
+
+  overlay.classList.add('visible');
+}
+
+function closeDWModal() {
+  document.getElementById('dw-modal-overlay').classList.remove('visible');
+}
+
+function dwSelectCurrency(sym, type) {
+  closeDWModal();
+  if (type === 'crypto') {
+    var walletNeeded = walletRequirements[sym];
+    if (walletNeeded && !savedWallets[walletNeeded]) {
+      showToast('error', t('toast_wallet_title'), t('toast_wallet_msg', {wallet: walletNames[walletNeeded] || walletNeeded}));
+      return;
+    }
+  }
+  showPage('wallet');
+}
+
+// Wallet requirements map: which wallet is needed for each crypto
+var walletRequirements = {
+  BTC: 'BTC', ETH: 'ETH', USDT: 'ETH', TON: 'TON', GRAM: 'TON',
+  BNB: 'BNB', SOL: 'SOL', STARS: null
+};
+var walletNames = {
+  BTC: 'Bitcoin (BTC)', ETH: 'Ethereum (ETH/ERC-20)', TON: 'TON',
+  BNB: 'BNB (BSC)', SOL: 'Solana (SOL)'
+};
+
+// ═══ WALLET CHECK ON ORDER CREATION ═══
+var origCoPickAsset = coPickAsset;
+coPickAsset = function(sym, name, type) {
+  if (type === 'crypto') {
+    var req = walletRequirements[sym];
+    if (req && !savedWallets[req]) {
+      showToast('error', t('toast_wallet_title'), t('toast_wallet_msg', {wallet: walletNames[req] || req}));
+      return;
+    }
+  }
+  origCoPickAsset(sym, name, type);
+};
+
+// Attach deposit/withdraw buttons
+document.getElementById('btn-deposit').onclick = function() { openDWModal('deposit'); };
+document.getElementById('btn-withdraw').onclick = function() { openDWModal('withdraw'); };
+</script>
+</body>
+</html>
