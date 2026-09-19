@@ -1,77 +1,75 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-echo "=== P2P Exchange Deploy Script ==="
-echo "Target: AlmaLinux 10 Server"
-echo ""
+echo "=== P2P Exchange Deploy (AlmaLinux 10) ==="
 
-# 1. System packages
-echo "[1/6] Installing system dependencies..."
-sudo dnf install -y python3.11 python3.11-pip git curl
+PROJECT_DIR="${PROJECT_DIR:-/root/p2p-exchange}"
 
-# 2. Create project directory
-echo "[2/6] Setting up project directory..."
-PROJECT_DIR="$HOME/p2p-exchange"
-mkdir -p "$PROJECT_DIR"
-cd "$PROJECT_DIR"
+echo "[1/5] Installing system dependencies..."
+dnf install -y python3 python3-pip git curl
 
-# 3. Install Python dependencies
-echo "[3/6] Installing Python packages..."
-pip3.11 install --user aiogram fastapi uvicorn aiosqlite python-dotenv pydantic
+PY=$(command -v python3)
+echo "      Using: $PY ($($PY --version))"
 
-# 4. Install cloudflared
-echo "[4/6] Installing cloudflared..."
+echo "[2/5] Installing Python packages..."
+"$PY" -m pip install --upgrade pip
+"$PY" -m pip install aiogram fastapi uvicorn aiosqlite python-dotenv pydantic
+
+echo "[3/5] Installing cloudflared..."
 if ! command -v cloudflared &> /dev/null; then
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64 -o /usr/local/bin/cloudflared
-    sudo chmod +x /usr/local/bin/cloudflared
-    echo "cloudflared installed."
-else
-    echo "cloudflared already installed."
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  CF_ARCH=amd64 ;;
+        aarch64) CF_ARCH=arm64 ;;
+        *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+    esac
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" \
+        -o /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
 fi
+echo "      cloudflared: $(cloudflared --version 2>&1 | head -1)"
 
-# 5. Copy files
-echo "[5/6] Copying project files..."
-echo "Place these files in $PROJECT_DIR:"
-echo "  - backend.py"
-echo "  - frontend.html  (rename from frontend_binance.html)"
-echo "  - .env  (copy from .env.example and fill in)"
-echo "  - tunnel.sh"
-echo ""
+echo "[4/5] Checking project files..."
+cd "$PROJECT_DIR"
+for f in backend.py frontend.html tunnel.sh; do
+    [ -f "$f" ] || { echo "ERROR: $f missing in $PROJECT_DIR"; exit 1; }
+done
+if [ ! -f .env ]; then
+    cp .env.example .env
+    echo "      Created .env from template — FILL IN BOT_TOKEN AND ADMIN_IDS!"
+fi
+chmod +x tunnel.sh
 
-# 6. Create systemd services
-echo "[6/6] Creating systemd services..."
+echo "[5/5] Creating systemd services..."
 
-# Backend service
-sudo tee /etc/systemd/system/p2p-backend.service > /dev/null <<'UNIT'
+cat > /etc/systemd/system/p2p-backend.service <<UNIT
 [Unit]
 Description=P2P Exchange Backend
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/p2p-exchange
-ExecStart=/usr/bin/python3.11 backend.py
+WorkingDirectory=$PROJECT_DIR
+EnvironmentFile=$PROJECT_DIR/.env
+ExecStart=$PY $PROJECT_DIR/backend.py
 Restart=always
 RestartSec=5
-Environment=PATH=/usr/local/bin:/usr/bin
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
-# Tunnel service
-sudo tee /etc/systemd/system/p2p-tunnel.service > /dev/null <<'UNIT'
+cat > /etc/systemd/system/p2p-tunnel.service <<UNIT
 [Unit]
 Description=P2P Cloudflare Tunnel
-After=network.target p2p-backend.service
-Requires=p2p-backend.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/p2p-exchange
-ExecStart=/bin/bash /root/p2p-exchange/tunnel.sh
+WorkingDirectory=$PROJECT_DIR
+ExecStart=/bin/bash $PROJECT_DIR/tunnel.sh
 Restart=always
 RestartSec=10
 
@@ -79,17 +77,14 @@ RestartSec=10
 WantedBy=multi-user.target
 UNIT
 
-sudo systemctl daemon-reload
-sudo systemctl enable p2p-backend p2p-tunnel
+systemctl daemon-reload
+systemctl enable p2p-backend p2p-tunnel
 
 echo ""
-echo "=== Deploy complete! ==="
+echo "=== Deploy complete ==="
 echo ""
-echo "Next steps:"
-echo "  1. Copy files to $PROJECT_DIR"
-echo "  2. Rename frontend_binance.html -> frontend.html"
-echo "  3. Copy .env.example -> .env and fill in BOT_TOKEN, ADMIN_IDS, LOG_CHANNEL_ID"
-echo "  4. Run: sudo systemctl start p2p-backend"
-echo "  5. Run: sudo systemctl start p2p-tunnel"
-echo "  6. Check logs: journalctl -u p2p-backend -f"
-echo "  7. Check tunnel: journalctl -u p2p-tunnel -f"
+echo "Next:"
+echo "  1. nano $PROJECT_DIR/.env    # BOT_TOKEN, ADMIN_IDS, LOG_CHANNEL_ID"
+echo "  2. systemctl start p2p-backend"
+echo "  3. systemctl start p2p-tunnel"
+echo "  4. journalctl -u p2p-tunnel -f    # shows the public URL"

@@ -886,21 +886,8 @@ function generateUID(telegramId) {
   return hash;
 }
 
-var user = {id:1, telegram_id:123456789, username:'', first_name:'', uid:0, status:'Beginner'};
+var user = {id:0, telegram_id:0, username:'', first_name:'', uid:0, status:'Beginner'};
 user.uid = generateUID(user.telegram_id);
-
-// Simulated user database for UID validation
-var knownUsers = {};
-knownUsers[generateUID(123456789)] = {uid:generateUID(123456789), username:'demo_user', first_name:'Demo'};
-knownUsers[generateUID(222222222)] = {uid:generateUID(222222222), username:'crypto_trader', first_name:'Alex'};
-knownUsers[generateUID(333333333)] = {uid:generateUID(333333333), username:'btc_whale', first_name:'Maria'};
-knownUsers[generateUID(444444444)] = {uid:generateUID(444444444), username:'star_dealer', first_name:'Ivan'};
-knownUsers[generateUID(555555555)] = {uid:generateUID(555555555), username:'eth_fan', first_name:'Olga'};
-knownUsers[generateUID(666666666)] = {uid:generateUID(666666666), username:'ton_master', first_name:'Dmitry'};
-
-function validateUID(uid) {
-  return knownUsers[uid] || null;
-}
 
 var savedWallets = {};
 try { savedWallets = JSON.parse(localStorage.getItem('p2p_wallets')||'{}'); } catch(e){}
@@ -913,10 +900,8 @@ var API_BASE = '';
     var m = document.querySelector('meta[name="api-base"]');
     if (m) API_BASE = m.getAttribute('content');
   }
-  if (!API_BASE && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    API_BASE = location.origin;
-  }
-  if (!API_BASE) API_BASE = 'http://localhost:8000';
+  // The backend serves this page, so same-origin is the correct default everywhere.
+  if (!API_BASE && /^https?:$/.test(location.protocol)) API_BASE = location.origin;
 })();
 
 function getInitData() {
@@ -951,11 +936,8 @@ try {
     var tg = Telegram.WebApp.initDataUnsafe.user;
     user.telegram_id = typeof tg.id === 'number' ? tg.id : 0;
     user.username = String(tg.username || '').replace(/[^a-zA-Z0-9_]/g, '');
-    user.first_name = escapeHtml(tg.first_name || 'User');
+    user.first_name = String(tg.first_name || 'User');
     user.uid = generateUID(user.telegram_id);
-    if (!knownUsers[user.uid]) {
-      knownUsers[user.uid] = {uid:user.uid, username:user.username, first_name:user.first_name};
-    }
     if (tg.language_code === 'ru') locale = 'ru';
     Telegram.WebApp.expand();
     var tgBg = appTheme === 'light' ? '#FAFAFA' : '#0B0E11';
@@ -1032,6 +1014,7 @@ var L = {
     'profile':'Profile','language':'Language','my_orders':'My Orders','my_deals':'My Deals',
     'deals_done':'Deals Completed','tg_id':'Telegram ID',
     'toast_wallet_title':'Wallet Not Linked','toast_wallet_msg':'Please link your {wallet} wallet before proceeding. Go to Wallet page to add your address.',
+    'toast_error_title':'Error','toast_action_failed':'Action failed. Please try again.','toast_deal_failed':'Could not create the deal. Please try again.',
     'all_crypto':'All Crypto','all_fiat':'All Fiat',
     'markets':'Markets','create_deal':'Create Deal',
     'wallet':'Wallet','bind_wallet':'Bind Wallet',
@@ -1096,6 +1079,7 @@ var L = {
     'profile':'Профиль','language':'Язык','my_orders':'Мои ордера','my_deals':'Мои сделки',
     'deals_done':'Завершённых сделок','tg_id':'Telegram ID',
     'toast_wallet_title':'Кошелёк не привязан','toast_wallet_msg':'Пожалуйста, привяжите ваш {wallet} кошелёк перед продолжением. Перейдите в раздел Кошелёк для добавления адреса.',
+    'toast_error_title':'Ошибка','toast_action_failed':'Не удалось выполнить действие. Попробуйте ещё раз.','toast_deal_failed':'Не удалось создать сделку. Попробуйте ещё раз.',
     'crypto_currencies':'Криптовалюты','fiat_currencies':'Фиатные валюты',
     'all_crypto':'Все крипто','all_fiat':'Все фиат',
     'markets':'Рынки','create_deal':'Создать сделку',
@@ -1162,20 +1146,7 @@ var balances = [
   {currency:'STARS',balance:0,frozen:0}
 ];
 
-var orders = [
-  {id:1,user_id:2,username:'crypto_trader',first_name:'Alex',side:'sell',crypto_currency:'USDT',
-   fiat_currency:'RUB',price:0,amount:0,min_limit:0,max_limit:0,
-   payment_method:'Sberbank, Tinkoff',terms:'Fast transfer',status:'active'},
-  {id:2,user_id:3,username:'btc_whale',first_name:'Maria',side:'sell',crypto_currency:'BTC',
-   fiat_currency:'USD',price:0,amount:0,min_limit:0,max_limit:0,
-   payment_method:'PayPal, Wise',status:'active'},
-  {id:3,user_id:4,username:'star_dealer',first_name:'Ivan',side:'sell',crypto_currency:'STARS',
-   fiat_currency:'USD',price:0,amount:0,min_limit:0,max_limit:0,
-   payment_method:'Any crypto',status:'active'},
-  {id:4,user_id:5,username:'eth_fan',first_name:'Olga',side:'buy',crypto_currency:'ETH',
-   fiat_currency:'EUR',price:0,amount:0,min_limit:0,max_limit:0,
-   payment_method:'SEPA, Revolut',status:'active'},
-];
+var orders = [];
 
 var deals = [];
 function loadDeals() {
@@ -1469,6 +1440,7 @@ function initCoin3D() {
 
 // CREATE ORDER WIZARD
 var coData = {step:1, role:'', participantUid:'', participantName:'', asset:'', assetName:'', assetType:'', currency:'', currencyName:'', currencyType:'', links:[], amount:''};
+var coCreatedDealId = null;
 var coS3Tab = 'crypto';
 var coS4Tab = 'crypto';
 var coTimerInterval = null;
@@ -1691,7 +1663,26 @@ function coRenderStep8() {
   document.getElementById('co-ok-msg').textContent = t('co_success_msg');
 }
 
-function coSubmit() { coShowStep(8); }
+function coSubmit() {
+  var btn = document.getElementById('co-cfm-ok');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  apiFetch('/api/deals/direct', {method:'POST', body:{
+    participant_uid: parseInt(coData.participantUid, 10),
+    role: coData.role,
+    crypto_currency: coData.asset,
+    fiat_currency: coData.currency,
+    amount: parseFloat(coData.amount),
+    links: coData.links
+  }}).then(function(deal) {
+    coCreatedDealId = deal.id;
+    loadDeals();
+    coShowStep(8);
+  }).catch(function(e) {
+    btn.disabled = false;
+    showToast('error', t('toast_error_title'), e.detail || t('toast_deal_failed'));
+  });
+}
 function coCancel() { showPage('home'); }
 
 function coSetTab(step, tab) {
@@ -1775,19 +1766,21 @@ function openDeal(id) {
 }
 
 function openDealFromOrder(orderId) {
-  currentDeal = {id: deals.length+1, order_id:orderId, buyer_id:1, seller_id:2,
-    crypto_currency:'USDT', fiat_currency:'RUB', price:0, crypto_amount:0,
-    fiat_amount:0, status:'awaiting_payment', created_at:new Date().toISOString()};
   var order = orders.find(function(o) { return o.id === orderId; });
-  if (order) {
-    currentDeal.crypto_currency = order.crypto_currency;
-    currentDeal.fiat_currency = order.fiat_currency;
-    currentDeal.price = order.price;
-  }
-  dealTimeLeft = 1800;
-  chatMessages = [];
-  renderDeal();
-  showPage('deal');
+  if (!order) return;
+  apiFetch('/api/deals', {method:'POST', body:{
+    order_id: orderId,
+    crypto_amount: order.amount
+  }}).then(function(deal) {
+    currentDeal = deal;
+    dealTimeLeft = 1800;
+    chatMessages = [];
+    loadDeals();
+    renderDeal();
+    showPage('deal');
+  }).catch(function(e) {
+    showToast('error', t('toast_error_title'), e.detail || t('toast_deal_failed'));
+  });
 }
 
 function renderDeal() {
@@ -1914,17 +1907,23 @@ function renderDeal() {
   renderChat();
 }
 
+var escrowEndpoints = {
+  paid: 'pay',
+  payment_confirmed: 'confirm-payment',
+  goods_sent: 'ship',
+  completed: 'confirm'
+};
+
 function dealEscrowAction(newStatus) {
   if (!currentDeal) return;
-  var endpoint = '';
-  if (newStatus === 'paid') endpoint = '/api/deals/' + currentDeal.id + '/pay';
-  else if (newStatus === 'completed') endpoint = '/api/deals/' + currentDeal.id + '/confirm';
-  else return;
-  apiFetch(endpoint, {method:'PUT'}).then(function() {
+  var action = escrowEndpoints[newStatus];
+  if (!action) return;
+  apiFetch('/api/deals/' + currentDeal.id + '/' + action, {method:'PUT'}).then(function() {
     currentDeal.status = newStatus;
     renderDeal();
+    loadDeals();
   }).catch(function(e) {
-    showToast('error', 'Error', e.detail || 'Action failed');
+    showToast('error', t('toast_error_title'), e.detail || t('toast_action_failed'));
   });
 }
 

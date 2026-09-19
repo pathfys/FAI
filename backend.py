@@ -13,7 +13,7 @@ import hmac
 import hashlib
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import parse_qs, unquote
 from contextlib import asynccontextmanager
@@ -24,7 +24,6 @@ from pydantic import BaseModel, field_validator
 
 from fastapi import FastAPI, APIRouter, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from aiogram import Bot, Dispatcher, Router, types, F
@@ -125,8 +124,9 @@ async def init_db():
             price REAL NOT NULL,
             crypto_amount REAL NOT NULL,
             fiat_amount REAL NOT NULL,
-            status TEXT DEFAULT 'pending',
+            status TEXT DEFAULT 'awaiting_payment',
             admin_paid BOOLEAN DEFAULT FALSE,
+            links TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             paid_at TIMESTAMP,
             completed_at TIMESTAMP
@@ -157,6 +157,29 @@ async def init_db():
             UNIQUE(user_id, wallet_type)
         );
     """)
+    await db.commit()
+    await migrate_db(db)
+
+
+async def migrate_db(db):
+    """Добавляет колонки, появившиеся после первого релиза, в существующие БД."""
+    expected = {
+        "deals": {"links": "TEXT", "admin_paid": "BOOLEAN DEFAULT FALSE"},
+        "users": {
+            "status": "TEXT DEFAULT 'Beginner'",
+            "uid": "INTEGER DEFAULT 0",
+            "total_deals": "INTEGER DEFAULT 0",
+            "successful_deals": "INTEGER DEFAULT 0",
+            "activity_pct": "INTEGER DEFAULT 0",
+        },
+    }
+    for table, columns in expected.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        existing = {r["name"] for r in await cur.fetchall()}
+        for name, decl in columns.items():
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                logger.info(f"Migrated: {table}.{name} added")
     await db.commit()
 
 
@@ -323,12 +346,12 @@ async def db_cancel_order(oid, uid):
     return cur.rowcount > 0
 
 
-async def db_create_deal(order_id, buyer_id, seller_id, crypto, fiat, price, c_amount, f_amount):
+async def db_create_deal(order_id, buyer_id, seller_id, crypto, fiat, price, c_amount, f_amount, links=None):
     db = await get_db()
     cur = await db.execute(
         """INSERT INTO deals (order_id, buyer_id, seller_id, crypto_currency, fiat_currency,
-                              price, crypto_amount, fiat_amount) VALUES (?,?,?,?,?,?,?,?)""",
-        (order_id, buyer_id, seller_id, crypto, fiat, price, c_amount, f_amount))
+                              price, crypto_amount, fiat_amount, links) VALUES (?,?,?,?,?,?,?,?,?)""",
+        (order_id, buyer_id, seller_id, crypto, fiat, price, c_amount, f_amount, links))
     await db.commit()
     return await db_get_deal(cur.lastrowid)
 
@@ -349,7 +372,7 @@ async def db_get_user_deals(uid):
 
 async def db_update_deal_status(did, status, admin_paid=False):
     db = await get_db()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     extra, p = "", [status]
     if status == "paid":
         extra, p = ", paid_at=?", [status, now]
@@ -396,7 +419,7 @@ async def db_create_broadcast(admin_id, text, total):
 
 async def db_update_broadcast(bid, sent, failed, status):
     db = await get_db()
-    completed = datetime.utcnow().isoformat() if status in ("completed", "failed") else None
+    completed = datetime.now(timezone.utc).isoformat() if status in ("completed", "failed") else None
     await db.execute("UPDATE broadcasts SET sent_count=?, failed_count=?, status=?, completed_at=? WHERE id=?",
                      (sent, failed, status, completed, bid))
     await db.commit()
@@ -428,7 +451,7 @@ def validate_init_data(init_data: str) -> dict:
         auth_date = int(auth_date_str)
     except (ValueError, TypeError):
         raise HTTPException(401, "Invalid auth_date")
-    now = int(datetime.utcnow().timestamp())
+    now = int(datetime.now(timezone.utc).timestamp())
     if now - auth_date > INIT_DATA_MAX_AGE:
         raise HTTPException(401, "Init data expired (replay attack protection)")
 
@@ -654,6 +677,73 @@ async def api_create_deal(request: Request, body: DealCreate):
     return deal
 
 
+class DirectDealCreate(BaseModel):
+    participant_uid: int
+    role: str
+    crypto_currency: str
+    fiat_currency: str
+    amount: float
+    links: Optional[list[str]] = None
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v):
+        if v not in ("buy", "sell"):
+            raise ValueError("role must be 'buy' or 'sell'")
+        return v
+
+    @field_validator("crypto_currency")
+    @classmethod
+    def validate_crypto(cls, v):
+        allowed = {"BTC", "ETH", "USDT", "GRAM", "TON", "STARS", "BNB", "SOL"}
+        if v.upper() not in allowed:
+            raise ValueError(f"Unsupported crypto: {v}")
+        return v.upper()
+
+    @field_validator("amount")
+    @classmethod
+    def validate_amount(cls, v):
+        if v <= 0:
+            raise ValueError("Amount must be positive")
+        return v
+
+    @field_validator("links")
+    @classmethod
+    def validate_links(cls, v):
+        if not v:
+            return v
+        if len(v) > 10:
+            raise ValueError("Too many links")
+        for link in v:
+            if len(link) > 512 or not link.startswith(("http://", "https://")):
+                raise ValueError("Links must be valid http(s) URLs")
+        return v
+
+
+@api.post("/deals/direct")
+async def api_create_direct_deal(request: Request, body: DirectDealCreate):
+    """Прямая P2P-сделка между двумя пользователями (без ордера).
+    Эскроу процедурный — средства не замораживаются, стороны проходят 4 шага."""
+    user = await get_current_user(request)
+    participant = await get_user_by_uid_val(body.participant_uid)
+    if not participant:
+        raise HTTPException(404, "Participant not found")
+    if participant["id"] == user["id"]:
+        raise HTTPException(400, "Cannot trade with yourself")
+    if body.role == "buy":
+        buyer_id, seller_id = user["id"], participant["id"]
+    else:
+        buyer_id, seller_id = participant["id"], user["id"]
+    links = "\n".join(body.links) if body.links else None
+    deal = await db_create_deal(
+        None, buyer_id, seller_id, body.crypto_currency, body.fiat_currency,
+        body.amount, body.amount, body.amount, links)
+    buyer = await get_user_by_id(buyer_id)
+    seller = await get_user_by_id(seller_id)
+    await log_deal_created(deal, buyer, seller)
+    return deal
+
+
 @api.get("/deals/{deal_id}")
 async def api_get_deal(request: Request, deal_id: int):
     user = await get_current_user(request)
@@ -667,32 +757,65 @@ async def api_get_deal(request: Request, deal_id: int):
 
 @api.put("/deals/{deal_id}/pay")
 async def api_mark_paid(request: Request, deal_id: int):
+    """Шаг 1 → 2: покупатель отметил оплату."""
     user = await get_current_user(request)
     deal = await db_get_deal(deal_id)
     if not deal:
         raise HTTPException(404)
     if deal["buyer_id"] != user["id"]:
         raise HTTPException(403, "Only buyer can mark as paid")
-    if deal["status"] != "pending":
-        raise HTTPException(400, "Deal is not pending")
+    if deal["status"] != "awaiting_payment":
+        raise HTTPException(400, "Deal is not awaiting payment")
     await db_update_deal_status(deal_id, "paid")
     updated_deal = await db_get_deal(deal_id)
     await log_deal_payment(updated_deal, user)
     return {"ok": True, "status": "paid"}
 
 
-@api.put("/deals/{deal_id}/confirm")
-async def api_confirm_deal(request: Request, deal_id: int):
+@api.put("/deals/{deal_id}/confirm-payment")
+async def api_confirm_payment(request: Request, deal_id: int):
+    """Шаг 2 → 3: продавец подтвердил получение оплаты."""
     user = await get_current_user(request)
     deal = await db_get_deal(deal_id)
     if not deal:
         raise HTTPException(404)
     if deal["seller_id"] != user["id"]:
-        raise HTTPException(403, "Only seller can confirm")
+        raise HTTPException(403, "Only seller can confirm payment")
     if deal["status"] != "paid":
-        raise HTTPException(400, "Not marked as paid")
-    await release_frozen(deal["seller_id"], deal["crypto_currency"], deal["crypto_amount"])
-    await update_balance(deal["buyer_id"], deal["crypto_currency"], deal["crypto_amount"])
+        raise HTTPException(400, "Deal is not marked as paid")
+    await db_update_deal_status(deal_id, "payment_confirmed")
+    return {"ok": True, "status": "payment_confirmed"}
+
+
+@api.put("/deals/{deal_id}/ship")
+async def api_ship_goods(request: Request, deal_id: int):
+    """Шаг 3 → 4: продавец отправил товар/актив."""
+    user = await get_current_user(request)
+    deal = await db_get_deal(deal_id)
+    if not deal:
+        raise HTTPException(404)
+    if deal["seller_id"] != user["id"]:
+        raise HTTPException(403, "Only seller can mark as sent")
+    if deal["status"] != "payment_confirmed":
+        raise HTTPException(400, "Payment is not confirmed yet")
+    await db_update_deal_status(deal_id, "goods_sent")
+    return {"ok": True, "status": "goods_sent"}
+
+
+@api.put("/deals/{deal_id}/confirm")
+async def api_confirm_deal(request: Request, deal_id: int):
+    """Шаг 4 → завершение: покупатель подтвердил получение, средства released."""
+    user = await get_current_user(request)
+    deal = await db_get_deal(deal_id)
+    if not deal:
+        raise HTTPException(404)
+    if deal["buyer_id"] != user["id"]:
+        raise HTTPException(403, "Only buyer can confirm receipt")
+    if deal["status"] != "goods_sent":
+        raise HTTPException(400, "Goods are not marked as sent")
+    if deal["order_id"] is not None:
+        await release_frozen(deal["seller_id"], deal["crypto_currency"], deal["crypto_amount"])
+        await update_balance(deal["buyer_id"], deal["crypto_currency"], deal["crypto_amount"])
     await db_update_deal_status(deal_id, "completed")
     updated_deal = await db_get_deal(deal_id)
     await log_deal_completed(updated_deal, user)
@@ -707,9 +830,10 @@ async def api_cancel_deal(request: Request, deal_id: int):
         raise HTTPException(404)
     if deal["buyer_id"] != user["id"] and deal["seller_id"] != user["id"]:
         raise HTTPException(403)
-    if deal["status"] != "pending":
+    if deal["status"] != "awaiting_payment":
         raise HTTPException(400, "Cannot cancel at this stage")
-    await unfreeze_balance(deal["seller_id"], deal["crypto_currency"], deal["crypto_amount"])
+    if deal["order_id"] is not None:
+        await unfreeze_balance(deal["seller_id"], deal["crypto_currency"], deal["crypto_amount"])
     await db_update_deal_status(deal_id, "cancelled")
     return {"ok": True, "status": "cancelled"}
 
@@ -830,8 +954,8 @@ async def adm_silent_pay(request: Request, deal_id: int):
     deal = await db_get_deal(deal_id)
     if not deal:
         raise HTTPException(404)
-    if deal["status"] != "pending":
-        raise HTTPException(400, "Deal is not pending")
+    if deal["status"] != "awaiting_payment":
+        raise HTTPException(400, "Deal is not awaiting payment")
     await db_update_deal_status(deal_id, "paid", admin_paid=True)
     return {"ok": True, "status": "paid", "admin_paid": True}
 
@@ -842,10 +966,11 @@ async def adm_force_complete(request: Request, deal_id: int):
     deal = await db_get_deal(deal_id)
     if not deal:
         raise HTTPException(404)
-    if deal["status"] not in ("pending", "paid"):
+    if deal["status"] not in ("awaiting_payment", "paid", "payment_confirmed", "goods_sent"):
         raise HTTPException(400, "Cannot complete this deal")
-    await release_frozen(deal["seller_id"], deal["crypto_currency"], deal["crypto_amount"])
-    await update_balance(deal["buyer_id"], deal["crypto_currency"], deal["crypto_amount"])
+    if deal["order_id"] is not None:
+        await release_frozen(deal["seller_id"], deal["crypto_currency"], deal["crypto_amount"])
+        await update_balance(deal["buyer_id"], deal["crypto_currency"], deal["crypto_amount"])
     await db_update_deal_status(deal_id, "completed")
     return {"ok": True, "status": "completed"}
 
@@ -1181,7 +1306,10 @@ async def cmd_setdeals(message: types.Message):
     parts = message.text.split()
     if len(parts) < 3:
         return await message.answer("❌ Формат: <code>/setdeals [UID] [кол-во]</code>", parse_mode=ParseMode.HTML)
-    uid_val, count = int(parts[1]), int(parts[2])
+    try:
+        uid_val, count = int(parts[1]), int(parts[2])
+    except ValueError:
+        return await message.answer("❌ UID и значение должны быть числами.")
     target = await get_user_by_uid_val(uid_val)
     if not target:
         return await message.answer(f"❌ Пользователь с UID {uid_val} не найден.")
@@ -1198,7 +1326,12 @@ async def cmd_setactivity(message: types.Message):
     parts = message.text.split()
     if len(parts) < 3:
         return await message.answer("❌ Формат: <code>/setactivity [UID] [%]</code>", parse_mode=ParseMode.HTML)
-    uid_val, pct = int(parts[1]), int(parts[2])
+    try:
+        uid_val, pct = int(parts[1]), int(parts[2])
+    except ValueError:
+        return await message.answer("❌ UID и значение должны быть числами.")
+    if not 0 <= pct <= 100:
+        return await message.answer("❌ Процент должен быть от 0 до 100.")
     target = await get_user_by_uid_val(uid_val)
     if not target:
         return await message.answer(f"❌ Пользователь с UID {uid_val} не найден.")
@@ -1215,7 +1348,10 @@ async def cmd_settotaldeals(message: types.Message):
     parts = message.text.split()
     if len(parts) < 3:
         return await message.answer("❌ Формат: <code>/settotaldeals [UID] [кол-во]</code>", parse_mode=ParseMode.HTML)
-    uid_val, count = int(parts[1]), int(parts[2])
+    try:
+        uid_val, count = int(parts[1]), int(parts[2])
+    except ValueError:
+        return await message.answer("❌ UID и значение должны быть числами.")
     target = await get_user_by_uid_val(uid_val)
     if not target:
         return await message.answer(f"❌ Пользователь с UID {uid_val} не найден.")
@@ -1232,7 +1368,10 @@ async def cmd_setsuccessful(message: types.Message):
     parts = message.text.split()
     if len(parts) < 3:
         return await message.answer("❌ Формат: <code>/setsuccessful [UID] [кол-во]</code>", parse_mode=ParseMode.HTML)
-    uid_val, count = int(parts[1]), int(parts[2])
+    try:
+        uid_val, count = int(parts[1]), int(parts[2])
+    except ValueError:
+        return await message.answer("❌ UID и значение должны быть числами.")
     target = await get_user_by_uid_val(uid_val)
     if not target:
         return await message.answer(f"❌ Пользователь с UID {uid_val} не найден.")
@@ -1249,7 +1388,10 @@ async def cmd_setstatus(message: types.Message):
     parts = message.text.split()
     if len(parts) < 3:
         return await message.answer("❌ Формат: <code>/setstatus [UID] [Merchant/Beginner]</code>", parse_mode=ParseMode.HTML)
-    uid_val = int(parts[1])
+    try:
+        uid_val = int(parts[1])
+    except ValueError:
+        return await message.answer("❌ UID должен быть числом.")
     status = parts[2]
     if status not in ("Merchant", "Beginner"):
         return await message.answer("❌ Статус может быть только <b>Merchant</b> или <b>Beginner</b>.", parse_mode=ParseMode.HTML)
@@ -1277,7 +1419,11 @@ async def lifespan(application: FastAPI):
         await bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
         logger.info(f"Webhook set: {WEBHOOK_URL}{WEBHOOK_PATH}")
     else:
-        asyncio.create_task(dp.start_polling(bot))
+        # Polling runs detached, so surface its failures instead of losing them.
+        task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
+        task.add_done_callback(
+            lambda t: t.cancelled() or (t.exception() and logger.error("Polling stopped: %r", t.exception()))
+        )
         logger.info("Polling started")
     yield
     if WEBHOOK_URL:
@@ -1287,7 +1433,7 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="P2P Exchange API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                    allow_methods=["*"], allow_headers=["*"])
 app.include_router(api)
 app.include_router(admin_api)
@@ -1317,4 +1463,4 @@ async def serve_frontend():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend:app", host=API_HOST, port=API_PORT, reload=True)
+    uvicorn.run(app, host=API_HOST, port=API_PORT)
