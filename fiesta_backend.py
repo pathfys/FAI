@@ -291,6 +291,26 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_messages_owner ON agent_messages(owner_id, ts);
 
+-- Deal pipeline: tracks each outreach conversation through stages.
+CREATE TABLE IF NOT EXISTS deals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    peer_name TEXT NOT NULL DEFAULT '',
+    peer_username TEXT,
+    gift_id TEXT,
+    stage TEXT NOT NULL DEFAULT 'dialog',   -- dialog | deal | creation | waiting | profit | failed
+    price_offered REAL,
+    price_agreed REAL,
+    currency TEXT NOT NULL DEFAULT 'stars',
+    note TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deals_owner ON deals(owner_id, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deals_owner_chat ON deals(owner_id, chat_id);
+
 -- Parsed gift-market items.
 CREATE TABLE IF NOT EXISTS gift_market (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -835,6 +855,54 @@ class GiftMarketOut(BaseModel):
     items: list[GiftItemOut]
     total: int
     last_parsed_at: int | None
+
+
+# ─── deals / pipeline ──────────────────────────────────────────────────────
+
+DealStage = Literal["dialog", "deal", "creation", "waiting", "profit", "failed"]
+DEAL_STAGES: list[str] = ["dialog", "deal", "creation", "waiting", "profit", "failed"]
+
+
+class DealOut(BaseModel):
+    id: int
+    session_id: str
+    chat_id: int
+    peer_name: str
+    peer_username: str | None
+    gift_id: str | None
+    stage: str
+    price_offered: float | None
+    price_agreed: float | None
+    currency: str
+    note: str | None
+    created_at: int
+    updated_at: int
+
+
+class DealUpdateIn(Strict):
+    stage: DealStage | None = None
+    price_offered: float | None = None
+    price_agreed: float | None = None
+    currency: str | None = Field(None, max_length=10)
+    note: str | None = Field(None, max_length=500)
+
+
+class DealsListOut(BaseModel):
+    items: list[DealOut]
+    total: int
+
+
+class DashboardOut(BaseModel):
+    total_outreach: int
+    stage_counts: dict[str, int]
+    profit_count: int
+    profit_rate: float
+    failed_count: int
+    messages_sent: int
+    messages_received: int
+    active_deals: int
+    today_outreach: int
+    today_profit: int
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1459,6 +1527,134 @@ async def record_agent_message(
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# app/services/deal_store.py
+#   Deal pipeline persistence + dashboard aggregation.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _deal_out(r: aiosqlite.Row) -> DealOut:
+    return DealOut(
+        id=r["id"], session_id=r["session_id"], chat_id=r["chat_id"],
+        peer_name=r["peer_name"], peer_username=r["peer_username"],
+        gift_id=r["gift_id"], stage=r["stage"],
+        price_offered=r["price_offered"], price_agreed=r["price_agreed"],
+        currency=r["currency"], note=r["note"],
+        created_at=r["created_at"], updated_at=r["updated_at"],
+    )
+
+
+async def upsert_deal(
+    db: aiosqlite.Connection, owner_id: int, session_id: str, chat_id: int,
+    peer_name: str = "", peer_username: str | None = None, gift_id: str | None = None,
+    stage: str = "dialog",
+) -> DealOut:
+    ts = now()
+    await db.execute(
+        """INSERT INTO deals (owner_id, session_id, chat_id, peer_name, peer_username, gift_id, stage, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(owner_id, chat_id) DO UPDATE SET
+               peer_name = CASE WHEN excluded.peer_name != '' THEN excluded.peer_name ELSE deals.peer_name END,
+               peer_username = COALESCE(excluded.peer_username, deals.peer_username),
+               gift_id = COALESCE(excluded.gift_id, deals.gift_id),
+               updated_at = excluded.updated_at""",
+        (owner_id, session_id, chat_id, peer_name, peer_username, gift_id, stage, ts, ts),
+    )
+    await db.commit()
+    row = await (await db.execute(
+        "SELECT * FROM deals WHERE owner_id = ? AND chat_id = ?", (owner_id, chat_id)
+    )).fetchone()
+    return _deal_out(row)
+
+
+async def update_deal(db: aiosqlite.Connection, owner_id: int, deal_id: int, changes: dict[str, Any]) -> DealOut:
+    allowed = {"stage", "price_offered", "price_agreed", "currency", "note"}
+    changes = {k: v for k, v in changes.items() if k in allowed and v is not None}
+    if not changes:
+        row = await (await db.execute("SELECT * FROM deals WHERE id = ? AND owner_id = ?", (deal_id, owner_id))).fetchone()
+        if not row:
+            raise ApiError(404, "not_found", "Deal not found")
+        return _deal_out(row)
+    assignments = ", ".join(f"{k} = ?" for k in changes)
+    values = list(changes.values())
+    await db.execute(
+        f"UPDATE deals SET {assignments}, updated_at = ? WHERE id = ? AND owner_id = ?",
+        (*values, now(), deal_id, owner_id),
+    )
+    await db.commit()
+    row = await (await db.execute("SELECT * FROM deals WHERE id = ? AND owner_id = ?", (deal_id, owner_id))).fetchone()
+    if not row:
+        raise ApiError(404, "not_found", "Deal not found")
+    return _deal_out(row)
+
+
+async def list_deals(
+    db: aiosqlite.Connection, owner_id: int, stage: str | None = None
+) -> DealsListOut:
+    if stage:
+        rows = await db.execute_fetchall(
+            "SELECT * FROM deals WHERE owner_id = ? AND stage = ? ORDER BY updated_at DESC LIMIT 500",
+            (owner_id, stage),
+        )
+    else:
+        rows = await db.execute_fetchall(
+            "SELECT * FROM deals WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 500",
+            (owner_id,),
+        )
+    items = [_deal_out(r) for r in rows]
+    total_rows = await db.execute_fetchall(
+        "SELECT COUNT(*) FROM deals WHERE owner_id = ?", (owner_id,)
+    )
+    return DealsListOut(items=items, total=total_rows[0][0])
+
+
+async def get_dashboard(db: aiosqlite.Connection, owner_id: int) -> DashboardOut:
+    total_row = await db.execute_fetchall("SELECT COUNT(*) FROM deals WHERE owner_id = ?", (owner_id,))
+    total = total_row[0][0]
+
+    stage_rows = await db.execute_fetchall(
+        "SELECT stage, COUNT(*) AS c FROM deals WHERE owner_id = ? GROUP BY stage", (owner_id,)
+    )
+    stage_counts = {s: 0 for s in DEAL_STAGES}
+    for r in stage_rows:
+        stage_counts[r["stage"]] = r["c"]
+
+    profit_count = stage_counts.get("profit", 0)
+    failed_count = stage_counts.get("failed", 0)
+    finished = profit_count + failed_count
+    profit_rate = round(profit_count / finished, 4) if finished > 0 else 0.0
+
+    active = total - profit_count - failed_count
+
+    msg_rows = await db.execute_fetchall(
+        "SELECT direction, COUNT(*) AS c FROM agent_messages WHERE owner_id = ? GROUP BY direction",
+        (owner_id,),
+    )
+    msgs = {r["direction"]: r["c"] for r in msg_rows}
+
+    today_start = now() - (now() % 86400)
+    today_outreach = (await db.execute_fetchall(
+        "SELECT COUNT(*) FROM deals WHERE owner_id = ? AND created_at >= ?", (owner_id, today_start)
+    ))[0][0]
+    today_profit = (await db.execute_fetchall(
+        "SELECT COUNT(*) FROM deals WHERE owner_id = ? AND stage = 'profit' AND updated_at >= ?",
+        (owner_id, today_start),
+    ))[0][0]
+
+    return DashboardOut(
+        total_outreach=total,
+        stage_counts=stage_counts,
+        profit_count=profit_count,
+        profit_rate=profit_rate,
+        failed_count=failed_count,
+        messages_sent=msgs.get("out", 0),
+        messages_received=msgs.get("in", 0),
+        active_deals=active,
+        today_outreach=today_outreach,
+        today_profit=today_profit,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # app/services/llm_agent.py
 #   Groq LLM integration — generates replies using the agent profile + examples.
 # ════════════════════════════════════════════════════════════════════════════
@@ -1711,8 +1907,21 @@ class MessageDispatcher:
 
             self._counters[owner_id]["in"] += 1
 
+            peer_name = ""
+            peer_username = None
+            try:
+                peer_name = getattr(sender, "first_name", "") or ""
+                if getattr(sender, "last_name", None):
+                    peer_name += f" {sender.last_name}"
+                peer_username = getattr(sender, "username", None)
+            except Exception:
+                pass
+
             async with connect() as db:
                 await record_agent_message(db, owner_id, session_id, chat_id, "in", text[:4000])
+
+                await upsert_deal(db, owner_id, session_id, chat_id,
+                                  peer_name=peer_name.strip(), peer_username=peer_username)
 
                 profile = await load_agent_profile(db, owner_id)
                 examples = await list_agent_examples(db, owner_id)
@@ -2503,6 +2712,42 @@ async def trigger_gift_parse(
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# app/routers/deals.py
+#   Deal pipeline + agent dashboard.
+# ════════════════════════════════════════════════════════════════════════════
+
+deals_router = APIRouter(prefix="/api/deals", tags=["deals"])
+
+
+@deals_router.get("", response_model=DealsListOut)
+async def get_deals(
+    stage: str | None = Query(None),
+    user: TgUser = Depends(current_user),
+) -> DealsListOut:
+    if stage and stage not in DEAL_STAGES:
+        raise ApiError(400, "invalid_stage", f"Stage must be one of {DEAL_STAGES}")
+    async with connect() as db:
+        return await list_deals(db, user.id, stage)
+
+
+@deals_router.patch("/{deal_id}", response_model=DealOut)
+async def patch_deal(
+    body: DealUpdateIn,
+    deal_id: int = PathParam(gt=0),
+    user: TgUser = Depends(current_user),
+) -> DealOut:
+    changes = body.model_dump(exclude_none=True)
+    async with connect() as db:
+        return await update_deal(db, user.id, deal_id, changes)
+
+
+@deals_router.get("/dashboard", response_model=DashboardOut)
+async def dashboard(user: TgUser = Depends(current_user)) -> DashboardOut:
+    async with connect() as db:
+        return await get_dashboard(db, user.id)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # app/routers/sessions.py
 #   Connecting Telegram accounts by phone + code (+ 2FA) and managing them.
 # ════════════════════════════════════════════════════════════════════════════
@@ -2873,6 +3118,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(agent_router)
     app.include_router(gifts_router)
+    app.include_router(deals_router)
     return app
 
 
