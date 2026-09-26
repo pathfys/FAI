@@ -303,6 +303,32 @@ CREATE TABLE IF NOT EXISTS agent_activity_log (
 );
 CREATE INDEX IF NOT EXISTS idx_activity_owner ON agent_activity_log(owner_id, ts);
 
+-- Detailed agent configuration per owner.
+CREATE TABLE IF NOT EXISTS agent_config (
+    owner_id INTEGER PRIMARY KEY,
+    agent_enabled INTEGER NOT NULL DEFAULT 1,
+    max_replies_daily INTEGER NOT NULL DEFAULT 0,
+    max_concurrent_chats INTEGER NOT NULL DEFAULT 0,
+    working_hours_enabled INTEGER NOT NULL DEFAULT 0,
+    working_hours_start INTEGER NOT NULL DEFAULT 9,
+    working_hours_end INTEGER NOT NULL DEFAULT 22,
+    response_max_length INTEGER NOT NULL DEFAULT 1000,
+    split_messages INTEGER NOT NULL DEFAULT 1,
+    split_delay_min INTEGER NOT NULL DEFAULT 1,
+    split_delay_max INTEGER NOT NULL DEFAULT 3,
+    reply_delay_min INTEGER NOT NULL DEFAULT 5,
+    reply_delay_max INTEGER NOT NULL DEFAULT 15,
+    language_mode TEXT NOT NULL DEFAULT 'auto',
+    temperature REAL NOT NULL DEFAULT 0.7,
+    auto_deal_create INTEGER NOT NULL DEFAULT 1,
+    greeting_enabled INTEGER NOT NULL DEFAULT 0,
+    greeting_text TEXT NOT NULL DEFAULT '',
+    ignore_bots INTEGER NOT NULL DEFAULT 1,
+    stop_words TEXT NOT NULL DEFAULT '',
+    context_messages INTEGER NOT NULL DEFAULT 10,
+    updated_at INTEGER NOT NULL
+);
+
 -- Deal pipeline: tracks each outreach conversation through stages.
 CREATE TABLE IF NOT EXISTS deals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -846,6 +872,77 @@ class AgentActivityOut(BaseModel):
 class AgentActivityPageOut(BaseModel):
     items: list[AgentActivityOut]
     next_cursor: str | None
+
+
+LanguageMode = Literal["auto", "ru", "en"]
+
+
+class AgentConfigOut(BaseModel):
+    agent_enabled: bool
+    max_replies_daily: int
+    max_concurrent_chats: int
+    working_hours_enabled: bool
+    working_hours_start: int
+    working_hours_end: int
+    response_max_length: int
+    split_messages: bool
+    split_delay_min: int
+    split_delay_max: int
+    reply_delay_min: int
+    reply_delay_max: int
+    language_mode: str
+    temperature: float
+    auto_deal_create: bool
+    greeting_enabled: bool
+    greeting_text: str
+    ignore_bots: bool
+    stop_words: str
+    context_messages: int
+    updated_at: int
+
+
+class AgentConfigPatch(Strict):
+    agent_enabled: bool | None = None
+    max_replies_daily: int | None = Field(None, ge=0, le=10000)
+    max_concurrent_chats: int | None = Field(None, ge=0, le=100)
+    working_hours_enabled: bool | None = None
+    working_hours_start: int | None = Field(None, ge=0, le=23)
+    working_hours_end: int | None = Field(None, ge=0, le=23)
+    response_max_length: int | None = Field(None, ge=50, le=4000)
+    split_messages: bool | None = None
+    split_delay_min: int | None = Field(None, ge=0, le=30)
+    split_delay_max: int | None = Field(None, ge=0, le=30)
+    reply_delay_min: int | None = Field(None, ge=0, le=300)
+    reply_delay_max: int | None = Field(None, ge=0, le=300)
+    language_mode: LanguageMode | None = None
+    temperature: float | None = Field(None, ge=0.0, le=1.5)
+    auto_deal_create: bool | None = None
+    greeting_enabled: bool | None = None
+    greeting_text: str | None = Field(None, max_length=1000)
+    ignore_bots: bool | None = None
+    stop_words: str | None = Field(None, max_length=2000)
+    context_messages: int | None = Field(None, ge=1, le=50)
+
+
+class AgentStatsDetailOut(BaseModel):
+    messages_sent_today: int
+    messages_received_today: int
+    messages_sent_week: int
+    messages_received_week: int
+    messages_sent_total: int
+    messages_received_total: int
+    tokens_in_today: int
+    tokens_out_today: int
+    tokens_in_week: int
+    tokens_out_week: int
+    tokens_in_total: int
+    tokens_out_total: int
+    errors_today: int
+    errors_total: int
+    active_chats_today: int
+    active_chats_total: int
+    replies_today: int
+    daily_limit: int
 
 
 class AgentSandboxIn(Strict):
@@ -1587,6 +1684,151 @@ async def list_activity(
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# app/services/agent_config_store.py
+#   Agent configuration persistence + detailed stats.
+# ════════════════════════════════════════════════════════════════════════════
+
+_AGENT_CONFIG_COLS = {
+    "agent_enabled", "max_replies_daily", "max_concurrent_chats",
+    "working_hours_enabled", "working_hours_start", "working_hours_end",
+    "response_max_length", "split_messages", "split_delay_min", "split_delay_max",
+    "reply_delay_min", "reply_delay_max", "language_mode", "temperature",
+    "auto_deal_create", "greeting_enabled", "greeting_text", "ignore_bots",
+    "stop_words", "context_messages",
+}
+
+
+async def load_agent_config(db: aiosqlite.Connection, owner_id: int) -> AgentConfigOut:
+    await db.execute(
+        "INSERT OR IGNORE INTO agent_config (owner_id, updated_at) VALUES (?, ?)",
+        (owner_id, now()),
+    )
+    await db.commit()
+    row = await (await db.execute("SELECT * FROM agent_config WHERE owner_id = ?", (owner_id,))).fetchone()
+    return AgentConfigOut(
+        agent_enabled=bool(row["agent_enabled"]),
+        max_replies_daily=row["max_replies_daily"],
+        max_concurrent_chats=row["max_concurrent_chats"],
+        working_hours_enabled=bool(row["working_hours_enabled"]),
+        working_hours_start=row["working_hours_start"],
+        working_hours_end=row["working_hours_end"],
+        response_max_length=row["response_max_length"],
+        split_messages=bool(row["split_messages"]),
+        split_delay_min=row["split_delay_min"],
+        split_delay_max=row["split_delay_max"],
+        reply_delay_min=row["reply_delay_min"],
+        reply_delay_max=row["reply_delay_max"],
+        language_mode=row["language_mode"],
+        temperature=row["temperature"],
+        auto_deal_create=bool(row["auto_deal_create"]),
+        greeting_enabled=bool(row["greeting_enabled"]),
+        greeting_text=row["greeting_text"],
+        ignore_bots=bool(row["ignore_bots"]),
+        stop_words=row["stop_words"],
+        context_messages=row["context_messages"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def update_agent_config(db: aiosqlite.Connection, owner_id: int, changes: dict[str, Any]) -> AgentConfigOut:
+    changes = {k: v for k, v in changes.items() if k in _AGENT_CONFIG_COLS and v is not None}
+    if changes:
+        for k in changes:
+            if isinstance(changes[k], bool):
+                changes[k] = int(changes[k])
+        assignments = ", ".join(f"{k} = ?" for k in changes)
+        values = list(changes.values())
+        await db.execute(
+            f"UPDATE agent_config SET {assignments}, updated_at = ? WHERE owner_id = ?",
+            (*values, now(), owner_id),
+        )
+        await db.commit()
+    return await load_agent_config(db, owner_id)
+
+
+async def get_agent_stats_detail(db: aiosqlite.Connection, owner_id: int) -> AgentStatsDetailOut:
+    today_start = now() - (now() % 86400)
+    week_start = today_start - 6 * 86400
+
+    def _count(rows: list, direction: str | None = None) -> int:
+        return sum(r["c"] for r in rows if direction is None or r.get("direction") == direction)
+
+    today_msgs = await db.execute_fetchall(
+        "SELECT direction, COUNT(*) AS c FROM agent_messages WHERE owner_id = ? AND ts >= ? GROUP BY direction",
+        (owner_id, today_start),
+    )
+    week_msgs = await db.execute_fetchall(
+        "SELECT direction, COUNT(*) AS c FROM agent_messages WHERE owner_id = ? AND ts >= ? GROUP BY direction",
+        (owner_id, week_start),
+    )
+    total_msgs = await db.execute_fetchall(
+        "SELECT direction, COUNT(*) AS c FROM agent_messages WHERE owner_id = ? GROUP BY direction",
+        (owner_id,),
+    )
+
+    today_d = {r["direction"]: r["c"] for r in today_msgs}
+    week_d = {r["direction"]: r["c"] for r in week_msgs}
+    total_d = {r["direction"]: r["c"] for r in total_msgs}
+
+    tok_today = await db.execute_fetchall(
+        "SELECT COALESCE(SUM(tokens_in),0) AS ti, COALESCE(SUM(tokens_out),0) AS to_ "
+        "FROM agent_messages WHERE owner_id = ? AND ts >= ? AND direction = 'out'",
+        (owner_id, today_start),
+    )
+    tok_week = await db.execute_fetchall(
+        "SELECT COALESCE(SUM(tokens_in),0) AS ti, COALESCE(SUM(tokens_out),0) AS to_ "
+        "FROM agent_messages WHERE owner_id = ? AND ts >= ? AND direction = 'out'",
+        (owner_id, week_start),
+    )
+    tok_total = await db.execute_fetchall(
+        "SELECT COALESCE(SUM(tokens_in),0) AS ti, COALESCE(SUM(tokens_out),0) AS to_ "
+        "FROM agent_messages WHERE owner_id = ? AND direction = 'out'",
+        (owner_id,),
+    )
+
+    err_today = (await db.execute_fetchall(
+        "SELECT COUNT(*) AS c FROM agent_messages WHERE owner_id = ? AND ts >= ? AND error IS NOT NULL AND error != ''",
+        (owner_id, today_start),
+    ))[0]["c"]
+    err_total = (await db.execute_fetchall(
+        "SELECT COUNT(*) AS c FROM agent_messages WHERE owner_id = ? AND error IS NOT NULL AND error != ''",
+        (owner_id,),
+    ))[0]["c"]
+
+    chats_today = (await db.execute_fetchall(
+        "SELECT COUNT(DISTINCT chat_id) AS c FROM agent_messages WHERE owner_id = ? AND ts >= ?",
+        (owner_id, today_start),
+    ))[0]["c"]
+    chats_total = (await db.execute_fetchall(
+        "SELECT COUNT(DISTINCT chat_id) AS c FROM agent_messages WHERE owner_id = ?",
+        (owner_id,),
+    ))[0]["c"]
+
+    cfg = await load_agent_config(db, owner_id)
+
+    return AgentStatsDetailOut(
+        messages_sent_today=today_d.get("out", 0),
+        messages_received_today=today_d.get("in", 0),
+        messages_sent_week=week_d.get("out", 0),
+        messages_received_week=week_d.get("in", 0),
+        messages_sent_total=total_d.get("out", 0),
+        messages_received_total=total_d.get("in", 0),
+        tokens_in_today=tok_today[0]["ti"],
+        tokens_out_today=tok_today[0]["to_"],
+        tokens_in_week=tok_week[0]["ti"],
+        tokens_out_week=tok_week[0]["to_"],
+        tokens_in_total=tok_total[0]["ti"],
+        tokens_out_total=tok_total[0]["to_"],
+        errors_today=err_today,
+        errors_total=err_total,
+        active_chats_today=chats_today,
+        active_chats_total=chats_total,
+        replies_today=today_d.get("out", 0),
+        daily_limit=cfg.max_replies_daily,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # app/services/deal_store.py
 #   Deal pipeline persistence + dashboard aggregation.
 # ════════════════════════════════════════════════════════════════════════════
@@ -1772,14 +2014,27 @@ class LLMAgent:
     def ready(self) -> bool:
         return bool(self.api_key)
 
-    def _build_system(self, profile: AgentProfileOut, examples: list[AgentExampleOut]) -> str:
-        parts = [
-            "IMPORTANT: Always reply in the SAME LANGUAGE as the user's message. "
-            "If they write in Russian, reply in Russian. If in English, reply in English. "
-            "Detect the language automatically and match it. "
-            "Keep replies concise and natural — write like a real person in a Telegram chat, "
-            "not like a formal letter."
-        ]
+    def _build_system(self, profile: AgentProfileOut, examples: list[AgentExampleOut],
+                      language_mode: str = "auto") -> str:
+        if language_mode == "ru":
+            lang_instruction = (
+                "IMPORTANT: Always reply in Russian regardless of the user's language. "
+                "Keep replies concise and natural — write like a real person in a Telegram chat."
+            )
+        elif language_mode == "en":
+            lang_instruction = (
+                "IMPORTANT: Always reply in English regardless of the user's language. "
+                "Keep replies concise and natural — write like a real person in a Telegram chat."
+            )
+        else:
+            lang_instruction = (
+                "IMPORTANT: Always reply in the SAME LANGUAGE as the user's message. "
+                "If they write in Russian, reply in Russian. If in English, reply in English. "
+                "Detect the language automatically and match it. "
+                "Keep replies concise and natural — write like a real person in a Telegram chat, "
+                "not like a formal letter."
+            )
+        parts = [lang_instruction]
         if profile.instructions:
             parts.append(f"Instructions:\n{profile.instructions}")
         if profile.personality:
@@ -1802,23 +2057,27 @@ class LLMAgent:
         examples: list[AgentExampleOut],
         model: str | None = None,
         history: list[dict[str, str]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        language_mode: str = "auto",
+        context_messages: int = 10,
     ) -> tuple[str, str, int, int]:
         """Returns (reply_text, model_used, tokens_in, tokens_out)."""
         if not self.ready:
             raise ApiError(503, "llm_not_configured", "GROQ_API_KEY is not set")
 
         model = model or self.default_model
-        system = self._build_system(profile, examples)
+        system = self._build_system(profile, examples, language_mode=language_mode)
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if history:
-            messages.extend(history[-10:])
+            messages.extend(history[-context_messages:])
         messages.append({"role": "user", "content": user_text})
 
         client = await self._client()
         resp = await client.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json={"model": model, "messages": messages, "max_tokens": 1024, "temperature": 0.7},
+            json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
         )
         if resp.status_code != 200:
             agent_log.error("Groq API error %s: %s", resp.status_code, resp.text[:500])
@@ -2017,14 +2276,61 @@ class MessageDispatcher:
             peer_label = peer_username or peer_name.strip() or str(chat_id)
 
             async with connect() as db:
+                cfg = await load_agent_config(db, owner_id)
+
+                if not cfg.agent_enabled:
+                    await record_activity(db, owner_id, session_id, chat_id,
+                                          "skipped", f"Агент выключен, сообщение от {peer_label} пропущено")
+                    return
+
+                if cfg.working_hours_enabled:
+                    current_hour = int(time.strftime("%H"))
+                    if cfg.working_hours_start <= cfg.working_hours_end:
+                        in_hours = cfg.working_hours_start <= current_hour < cfg.working_hours_end
+                    else:
+                        in_hours = current_hour >= cfg.working_hours_start or current_hour < cfg.working_hours_end
+                    if not in_hours:
+                        await record_activity(db, owner_id, session_id, chat_id,
+                                              "skipped", f"Нерабочее время ({current_hour}:00), {peer_label} пропущен")
+                        return
+
+                if cfg.max_replies_daily > 0:
+                    today_start = now() - (now() % 86400)
+                    sent_today_rows = await db.execute_fetchall(
+                        "SELECT COUNT(*) AS c FROM agent_messages WHERE owner_id = ? AND direction = 'out' AND ts >= ? AND error IS NULL",
+                        (owner_id, today_start),
+                    )
+                    sent_today = sent_today_rows[0]["c"]
+                    if sent_today >= cfg.max_replies_daily:
+                        await record_activity(db, owner_id, session_id, chat_id,
+                                              "skipped", f"Дневной лимит ({cfg.max_replies_daily}) исчерпан, {peer_label}")
+                        return
+
+                if cfg.max_concurrent_chats > 0:
+                    active_tasks = len(self._msg_tasks)
+                    if active_tasks > cfg.max_concurrent_chats:
+                        await record_activity(db, owner_id, session_id, chat_id,
+                                              "skipped", f"Лимит параллельных чатов ({cfg.max_concurrent_chats}), {peer_label}")
+                        return
+
+                if cfg.stop_words:
+                    stop_list = [w.strip().lower() for w in cfg.stop_words.split(",") if w.strip()]
+                    text_lower = text.lower()
+                    for sw in stop_list:
+                        if sw in text_lower:
+                            await record_activity(db, owner_id, session_id, chat_id,
+                                                  "skipped", f"Стоп-слово '{sw}' в сообщении от {peer_label}")
+                            return
+
                 await record_agent_message(db, owner_id, session_id, chat_id, "in", text[:4000])
                 await record_activity(db, owner_id, session_id, chat_id,
                                       "msg_received", f"От {peer_label}: {text[:200]}")
 
-                await upsert_deal(db, owner_id, session_id, chat_id,
-                                  peer_name=peer_name.strip(), peer_username=peer_username)
-                await record_activity(db, owner_id, session_id, chat_id,
-                                      "deal_updated", f"Сделка с {peer_label} — стадия: диалог")
+                if cfg.auto_deal_create:
+                    await upsert_deal(db, owner_id, session_id, chat_id,
+                                      peer_name=peer_name.strip(), peer_username=peer_username)
+                    await record_activity(db, owner_id, session_id, chat_id,
+                                          "deal_updated", f"Сделка с {peer_label} — стадия: диалог")
 
                 profile = await load_agent_profile(db, owner_id)
                 examples = await list_agent_examples(db, owner_id)
@@ -2034,8 +2340,9 @@ class MessageDispatcher:
                 ).fetchone()
                 model = user_settings_row["groq_model"] if user_settings_row else "llama-3.3-70b-versatile"
 
+                ctx_limit = cfg.context_messages
                 recent = await db.execute_fetchall(
-                    "SELECT direction, text FROM agent_messages WHERE owner_id = ? AND chat_id = ? ORDER BY id DESC LIMIT 10",
+                    f"SELECT direction, text FROM agent_messages WHERE owner_id = ? AND chat_id = ? ORDER BY id DESC LIMIT {ctx_limit}",
                     (owner_id, chat_id),
                 )
                 history = []
@@ -2043,9 +2350,9 @@ class MessageDispatcher:
                     role = "assistant" if r["direction"] == "out" else "user"
                     history.append({"role": role, "content": r["text"]})
 
-            delay = settings.agent_reply_delay_min + (
-                secrets.randbelow(max(1, settings.agent_reply_delay_max - settings.agent_reply_delay_min + 1))
-            )
+            delay_min = cfg.reply_delay_min
+            delay_max = cfg.reply_delay_max
+            delay = delay_min + secrets.randbelow(max(1, delay_max - delay_min + 1))
             async with connect() as db:
                 await record_activity(db, owner_id, session_id, chat_id,
                                       "delay_wait", f"Ожидание {delay}с перед ответом {peer_label}")
@@ -2058,15 +2365,25 @@ class MessageDispatcher:
                                           "generating", f"Генерация ответа для {peer_label} (модель: {model})")
 
                 reply, used_model, tok_in, tok_out = await self.llm.generate(
-                    text, profile, examples, model=model, history=history
+                    text, profile, examples, model=model, history=history,
+                    temperature=cfg.temperature,
+                    max_tokens=cfg.response_max_length,
+                    language_mode=cfg.language_mode,
+                    context_messages=cfg.context_messages,
                 )
 
-                parts = _split_message(reply)
-                for i, part in enumerate(parts):
-                    if i > 0:
-                        typing_delay = 1 + secrets.randbelow(3)
-                        await asyncio.sleep(typing_delay)
-                    await event.respond(part)
+                if cfg.split_messages:
+                    parts = _split_message(reply)
+                    for i, part in enumerate(parts):
+                        if i > 0:
+                            split_delay = cfg.split_delay_min + secrets.randbelow(
+                                max(1, cfg.split_delay_max - cfg.split_delay_min + 1)
+                            )
+                            await asyncio.sleep(split_delay)
+                        await event.respond(part)
+                else:
+                    parts = [reply]
+                    await event.respond(reply)
 
                 self._counters[owner_id]["out"] += 1
                 async with connect() as db:
@@ -2102,8 +2419,17 @@ class MessageDispatcher:
             if not event.is_private:
                 return
             sender = await event.get_sender()
-            if not sender or getattr(sender, "bot", False):
+            if not sender:
                 return
+            is_bot = getattr(sender, "bot", False)
+            if is_bot:
+                try:
+                    async with connect() as db:
+                        cfg = await load_agent_config(db, owner_id)
+                    if cfg.ignore_bots:
+                        return
+                except Exception:
+                    return
             if not (event.raw_text or "").strip():
                 return
             task = asyncio.create_task(
@@ -2816,6 +3142,31 @@ async def agent_sandbox(
         body.text, profile, examples, model=model
     )
     return AgentSandboxOut(reply=reply, model=used_model, tokens_in=tok_in, tokens_out=tok_out)
+
+
+@agent_router.get("/config", response_model=AgentConfigOut)
+async def get_agent_config_endpoint(
+    user: TgUser = Depends(current_user),
+) -> AgentConfigOut:
+    async with connect() as db:
+        return await load_agent_config(db, user.id)
+
+
+@agent_router.patch("/config", response_model=AgentConfigOut)
+async def patch_agent_config_endpoint(
+    body: AgentConfigPatch,
+    user: TgUser = Depends(current_user),
+) -> AgentConfigOut:
+    async with connect() as db:
+        return await update_agent_config(db, user.id, body)
+
+
+@agent_router.get("/stats", response_model=AgentStatsDetailOut)
+async def get_agent_stats_endpoint(
+    user: TgUser = Depends(current_user),
+) -> AgentStatsDetailOut:
+    async with connect() as db:
+        return await get_agent_stats_detail(db, user.id)
 
 
 # ════════════════════════════════════════════════════════════════════════════
