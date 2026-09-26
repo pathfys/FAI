@@ -2241,6 +2241,70 @@ class MessageDispatcher:
     def counters_for(self, owner_id: int) -> dict[str, int]:
         return self._counters[owner_id]
 
+    async def _appeal_spam_block(
+        self, client: TelegramClient, owner_id: int, session_id: str,
+    ) -> str:
+        """Send /start to @SpamBot to check and appeal a spam block.
+        Returns the SpamBot's final reply text."""
+        from telethon.tl.types import PeerUser
+        import asyncio as _aio
+
+        spambot = "@SpamBot"
+        result_text = ""
+        try:
+            entity = await client.get_entity(spambot)
+
+            await client.send_message(entity, "/start")
+            await _aio.sleep(3)
+            msgs = await client.get_messages(entity, limit=1)
+            first_reply = msgs[0].text if msgs else ""
+            result_text = first_reply
+
+            async with connect() as db:
+                await record_activity(
+                    db, owner_id, session_id, 0,
+                    "spambot", f"SpamBot ответ: {first_reply[:300]}",
+                )
+
+            has_restriction = any(kw in first_reply.lower() for kw in [
+                "ограничен", "limited", "restrict", "spam",
+                "не можете", "cannot", "blocked",
+            ])
+
+            if has_restriction:
+                await _aio.sleep(2)
+                await client.send_message(entity, "/start")
+                await _aio.sleep(4)
+                msgs2 = await client.get_messages(entity, limit=1)
+                appeal_reply = msgs2[0].text if msgs2 else ""
+                result_text = appeal_reply
+
+                async with connect() as db:
+                    await record_activity(
+                        db, owner_id, session_id, 0,
+                        "spambot_appeal",
+                        f"SpamBot апелляция: {appeal_reply[:300]}",
+                    )
+
+                dispatch_log.warning(
+                    "spam block detected session=%s, appeal sent, reply: %s",
+                    session_id, appeal_reply[:200],
+                )
+            else:
+                dispatch_log.info(
+                    "spam check OK session=%s: %s", session_id, first_reply[:200],
+                )
+        except Exception as exc:
+            result_text = f"SpamBot error: {exc}"
+            async with connect() as db:
+                await record_activity(
+                    db, owner_id, session_id, 0,
+                    "spambot_error", f"Ошибка SpamBot: {exc}"[:300],
+                )
+            dispatch_log.error("spambot appeal failed session=%s: %s", session_id, exc)
+
+        return result_text
+
     async def start_session(self, session_id: str, owner_id: int) -> bool:
         if session_id in self._clients:
             return True
@@ -2465,6 +2529,25 @@ class MessageDispatcher:
                     "replied chat=%s session=%s parts=%d tokens=%d+%d",
                     chat_id, session_id, len(parts), tok_in, tok_out,
                 )
+            except (
+                tg.ChatWriteForbiddenError,
+                tg.UserBannedInChannelError,
+                tg.PeerFloodError,
+            ) as e:
+                self._counters[owner_id]["err"] += 1
+                err_text = f"{type(e).__name__}: {e}"[:500]
+                async with connect() as db:
+                    await record_agent_message(
+                        db, owner_id, session_id, chat_id, "out", "", error=err_text,
+                    )
+                    await record_activity(db, owner_id, session_id, chat_id,
+                                          "spam_block",
+                                          f"Спамблок для {peer_label}: {err_text}")
+                dispatch_log.warning("spam block detected chat=%s: %s", chat_id, e)
+                try:
+                    await self._appeal_spam_block(event.client, owner_id, session_id)
+                except Exception:
+                    pass
             except Exception as e:
                 self._counters[owner_id]["err"] += 1
                 err_text = f"{type(e).__name__}: {e}"[:500]
