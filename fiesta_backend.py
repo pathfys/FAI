@@ -333,7 +333,23 @@ CREATE TABLE IF NOT EXISTS agent_config (
     target_has_photo INTEGER NOT NULL DEFAULT 0,
     target_has_username INTEGER NOT NULL DEFAULT 0,
     target_skip_empty_bio INTEGER NOT NULL DEFAULT 0,
+    outreach_enabled INTEGER NOT NULL DEFAULT 0,
+    outreach_daily_limit INTEGER NOT NULL DEFAULT 20,
+    outreach_delay_min INTEGER NOT NULL DEFAULT 60,
+    outreach_delay_max INTEGER NOT NULL DEFAULT 180,
+    outreach_text TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS outreach_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    target_username TEXT,
+    status TEXT NOT NULL DEFAULT 'sent',
+    ts INTEGER NOT NULL,
+    UNIQUE(owner_id, target_user_id)
 );
 
 -- Deal pipeline: tracks each outreach conversation through stages.
@@ -912,6 +928,11 @@ class AgentConfigOut(BaseModel):
     target_has_photo: bool
     target_has_username: bool
     target_skip_empty_bio: bool
+    outreach_enabled: bool
+    outreach_daily_limit: int
+    outreach_delay_min: int
+    outreach_delay_max: int
+    outreach_text: str
     updated_at: int
 
 
@@ -943,6 +964,11 @@ class AgentConfigPatch(Strict):
     target_has_photo: bool | None = None
     target_has_username: bool | None = None
     target_skip_empty_bio: bool | None = None
+    outreach_enabled: bool | None = None
+    outreach_daily_limit: int | None = Field(None, ge=1, le=500)
+    outreach_delay_min: int | None = Field(None, ge=10, le=3600)
+    outreach_delay_max: int | None = Field(None, ge=10, le=3600)
+    outreach_text: str | None = Field(None, max_length=2000)
 
 
 class AgentStatsDetailOut(BaseModel):
@@ -1719,6 +1745,8 @@ _AGENT_CONFIG_COLS = {
     "target_filter_enabled", "target_premium_only", "target_min_gifts",
     "target_min_account_age_days", "target_has_photo", "target_has_username",
     "target_skip_empty_bio",
+    "outreach_enabled", "outreach_daily_limit", "outreach_delay_min",
+    "outreach_delay_max", "outreach_text",
 }
 
 
@@ -1757,6 +1785,11 @@ async def load_agent_config(db: aiosqlite.Connection, owner_id: int) -> AgentCon
         target_has_photo=bool(row["target_has_photo"]),
         target_has_username=bool(row["target_has_username"]),
         target_skip_empty_bio=bool(row["target_skip_empty_bio"]),
+        outreach_enabled=bool(row["outreach_enabled"]),
+        outreach_daily_limit=row["outreach_daily_limit"],
+        outreach_delay_min=row["outreach_delay_min"],
+        outreach_delay_max=row["outreach_delay_max"],
+        outreach_text=row["outreach_text"],
         updated_at=row["updated_at"],
     )
 
@@ -3675,6 +3708,164 @@ async def _gift_loop(interval: int) -> None:
                             await asyncio.wait_for(client.disconnect(), 10)
 
 
+outreach_log_mod = logging.getLogger("fiesta.outreach")
+
+
+async def _outreach_loop(interval: int = 30) -> None:
+    """Periodically sends outreach messages from owners with outreach enabled."""
+    from telethon.tl import functions
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with connect() as db:
+                owners = await db.execute_fetchall(
+                    "SELECT DISTINCT owner_id FROM sessions WHERE is_active = 1 AND usage_type = 'dispatcher'"
+                )
+                for orow in owners:
+                    oid = orow["owner_id"]
+                    cfg = await load_agent_config(db, oid)
+                    if not cfg.outreach_enabled or not cfg.outreach_text.strip():
+                        continue
+
+                    today_start = int(time.time()) - (int(time.time()) % 86400)
+                    sent_today = (await db.execute_fetchall(
+                        "SELECT COUNT(*) FROM outreach_log WHERE owner_id = ? AND ts >= ?",
+                        (oid, today_start),
+                    ))[0][0]
+                    if sent_today >= cfg.outreach_daily_limit:
+                        continue
+
+                    sess_rows = await db.execute_fetchall(
+                        "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher' LIMIT 1",
+                        (oid,),
+                    )
+                    if not sess_rows:
+                        continue
+                    sess = sess_rows[0]
+                    session_id = sess["id"]
+                    path = _file_for(sess)
+                    if not path.exists() or not settings.telethon_ready:
+                        continue
+
+                    already_contacted = {
+                        r[0] for r in await db.execute_fetchall(
+                            "SELECT target_user_id FROM outreach_log WHERE owner_id = ?", (oid,)
+                        )
+                    }
+
+                    targets: list[dict] = []
+                    msg_rows = await db.execute_fetchall(
+                        "SELECT DISTINCT chat_id FROM agent_messages WHERE owner_id = ?", (oid,)
+                    )
+                    known_chats = {r["chat_id"] for r in msg_rows}
+
+                    act_rows = await db.execute_fetchall(
+                        "SELECT DISTINCT chat_id FROM agent_activity_log WHERE owner_id = ? AND action = 'incoming' ORDER BY id DESC LIMIT 500",
+                        (oid,),
+                    )
+                    for ar in act_rows:
+                        uid = ar["chat_id"]
+                        if uid > 0 and uid not in already_contacted and uid != oid and uid not in known_chats:
+                            targets.append({"user_id": uid, "username": None})
+                            if len(targets) >= cfg.outreach_daily_limit - sent_today:
+                                break
+
+                    if not targets:
+                        continue
+
+                    client = TelegramClient(
+                        str(path), settings.api_id, settings.api_hash,
+                        device_model="FiestaAI Outreach", timeout=20,
+                    )
+                    try:
+                        await asyncio.wait_for(client.connect(), 20)
+                        if not await client.is_user_authorized():
+                            continue
+
+                        for tgt in targets:
+                            try:
+                                entity = await client.get_entity(tgt["user_id"])
+                                uname = getattr(entity, "username", None)
+
+                                if cfg.target_filter_enabled:
+                                    is_premium = getattr(entity, "premium", False)
+                                    has_photo = getattr(entity, "photo", None) is not None
+                                    has_uname = bool(uname)
+                                    if cfg.target_premium_only and not is_premium:
+                                        continue
+                                    if cfg.target_has_photo and not has_photo:
+                                        continue
+                                    if cfg.target_has_username and not has_uname:
+                                        continue
+                                    if cfg.target_skip_empty_bio:
+                                        try:
+                                            full = await client(functions.users.GetFullUserRequest(tgt["user_id"]))
+                                            bio = getattr(full.full_user, "about", "") or ""
+                                            if not bio.strip():
+                                                continue
+                                        except Exception:
+                                            pass
+
+                                await client.send_message(tgt["user_id"], cfg.outreach_text)
+
+                                await db.execute(
+                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'sent', ?)",
+                                    (oid, session_id, tgt["user_id"], uname, now()),
+                                )
+                                await record_activity(db, oid, session_id, tgt["user_id"],
+                                                      "outreach_sent",
+                                                      f"Рассылка для @{uname or tgt['user_id']}")
+                                await record_agent_message(
+                                    db, oid, session_id, tgt["user_id"], "out",
+                                    cfg.outreach_text[:4000], model="outreach",
+                                )
+                                await db.commit()
+                                outreach_log_mod.info("outreach sent owner=%s target=%s", oid, tgt["user_id"])
+
+                                delay = cfg.outreach_delay_min + secrets.randbelow(
+                                    max(1, cfg.outreach_delay_max - cfg.outreach_delay_min + 1)
+                                )
+                                await asyncio.sleep(delay)
+
+                                sent_today += 1
+                                if sent_today >= cfg.outreach_daily_limit:
+                                    break
+
+                            except (
+                                tg.ChatWriteForbiddenError,
+                                tg.UserBannedInChannelError,
+                                tg.PeerFloodError,
+                            ) as e:
+                                await db.execute(
+                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'spam_block', ?)",
+                                    (oid, session_id, tgt["user_id"], None, now()),
+                                )
+                                await record_activity(db, oid, session_id, tgt["user_id"],
+                                                      "outreach_spam_block",
+                                                      f"Спамблок при рассылке: {type(e).__name__}")
+                                await db.commit()
+                                outreach_log_mod.warning("outreach spam block owner=%s: %s", oid, e)
+                                break
+                            except Exception as e:
+                                await db.execute(
+                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'error', ?)",
+                                    (oid, session_id, tgt["user_id"], None, now()),
+                                )
+                                await record_activity(db, oid, session_id, tgt["user_id"],
+                                                      "outreach_error",
+                                                      f"Ошибка рассылки: {type(e).__name__}: {e}"[:300])
+                                await db.commit()
+                                outreach_log_mod.debug("outreach error owner=%s target=%s: %s", oid, tgt["user_id"], e)
+
+                    except Exception as e:
+                        outreach_log_mod.debug("outreach loop skip owner=%s: %s", oid, e)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(client.disconnect(), 10)
+        except Exception as e:
+            outreach_log_mod.error("outreach loop error: %s", e)
+
+
 async def _auto_start_dispatchers(dispatcher: MessageDispatcher) -> None:
     """Start dispatchers for all active dispatcher-type sessions."""
     async with connect() as db:
@@ -3715,6 +3906,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     janitor = asyncio.create_task(_janitor(manager))
     gift_task = asyncio.create_task(_gift_loop(settings.gift_parse_interval))
+    outreach_task = asyncio.create_task(_outreach_loop(30))
 
     if llm.ready and settings.telethon_ready:
         await _auto_start_dispatchers(dispatcher)
@@ -3730,6 +3922,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         janitor.cancel()
         gift_task.cancel()
+        outreach_task.cancel()
         await dispatcher.shutdown()
         await llm.close()
         await manager.shutdown()
