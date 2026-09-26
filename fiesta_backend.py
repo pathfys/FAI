@@ -106,7 +106,7 @@ class Settings:
     groq_base_url: str = "https://api.groq.com/openai/v1"
     agent_reply_delay_min: int = 5
     agent_reply_delay_max: int = 15
-    gift_parse_interval: int = 3600
+    gift_parse_interval: int = 300
 
     @property
     def telethon_ready(self) -> bool:
@@ -145,7 +145,7 @@ def load_settings() -> Settings:
         groq_base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip(),
         agent_reply_delay_min=_int(os.getenv("AGENT_REPLY_DELAY_MIN"), 5, "AGENT_REPLY_DELAY_MIN"),
         agent_reply_delay_max=_int(os.getenv("AGENT_REPLY_DELAY_MAX"), 15, "AGENT_REPLY_DELAY_MAX"),
-        gift_parse_interval=_int(os.getenv("GIFT_PARSE_INTERVAL"), 3600, "GIFT_PARSE_INTERVAL"),
+        gift_parse_interval=_int(os.getenv("GIFT_PARSE_INTERVAL"), 300, "GIFT_PARSE_INTERVAL"),
     )
     if not s.allowed_user_ids:
         config_log.warning("ALLOWED_USER_IDS is empty — every request will get 403 until you add your Telegram id")
@@ -326,6 +326,13 @@ CREATE TABLE IF NOT EXISTS agent_config (
     ignore_bots INTEGER NOT NULL DEFAULT 1,
     stop_words TEXT NOT NULL DEFAULT '',
     context_messages INTEGER NOT NULL DEFAULT 10,
+    target_filter_enabled INTEGER NOT NULL DEFAULT 0,
+    target_premium_only INTEGER NOT NULL DEFAULT 0,
+    target_min_gifts INTEGER NOT NULL DEFAULT 0,
+    target_min_account_age_days INTEGER NOT NULL DEFAULT 0,
+    target_has_photo INTEGER NOT NULL DEFAULT 0,
+    target_has_username INTEGER NOT NULL DEFAULT 0,
+    target_skip_empty_bio INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
 
@@ -898,6 +905,13 @@ class AgentConfigOut(BaseModel):
     ignore_bots: bool
     stop_words: str
     context_messages: int
+    target_filter_enabled: bool
+    target_premium_only: bool
+    target_min_gifts: int
+    target_min_account_age_days: int
+    target_has_photo: bool
+    target_has_username: bool
+    target_skip_empty_bio: bool
     updated_at: int
 
 
@@ -922,6 +936,13 @@ class AgentConfigPatch(Strict):
     ignore_bots: bool | None = None
     stop_words: str | None = Field(None, max_length=2000)
     context_messages: int | None = Field(None, ge=1, le=50)
+    target_filter_enabled: bool | None = None
+    target_premium_only: bool | None = None
+    target_min_gifts: int | None = Field(None, ge=0, le=1000)
+    target_min_account_age_days: int | None = Field(None, ge=0, le=3650)
+    target_has_photo: bool | None = None
+    target_has_username: bool | None = None
+    target_skip_empty_bio: bool | None = None
 
 
 class AgentStatsDetailOut(BaseModel):
@@ -1695,6 +1716,9 @@ _AGENT_CONFIG_COLS = {
     "reply_delay_min", "reply_delay_max", "language_mode", "temperature",
     "auto_deal_create", "greeting_enabled", "greeting_text", "ignore_bots",
     "stop_words", "context_messages",
+    "target_filter_enabled", "target_premium_only", "target_min_gifts",
+    "target_min_account_age_days", "target_has_photo", "target_has_username",
+    "target_skip_empty_bio",
 }
 
 
@@ -1726,6 +1750,13 @@ async def load_agent_config(db: aiosqlite.Connection, owner_id: int) -> AgentCon
         ignore_bots=bool(row["ignore_bots"]),
         stop_words=row["stop_words"],
         context_messages=row["context_messages"],
+        target_filter_enabled=bool(row["target_filter_enabled"]),
+        target_premium_only=bool(row["target_premium_only"]),
+        target_min_gifts=row["target_min_gifts"],
+        target_min_account_age_days=row["target_min_account_age_days"],
+        target_has_photo=bool(row["target_has_photo"]),
+        target_has_username=bool(row["target_has_username"]),
+        target_skip_empty_bio=bool(row["target_skip_empty_bio"]),
         updated_at=row["updated_at"],
     )
 
@@ -2321,6 +2352,40 @@ class MessageDispatcher:
                             await record_activity(db, owner_id, session_id, chat_id,
                                                   "skipped", f"Стоп-слово '{sw}' в сообщении от {peer_label}")
                             return
+
+                if cfg.target_filter_enabled:
+                    skip_reason = None
+                    is_premium = getattr(sender, "premium", False)
+                    has_photo = getattr(sender, "photo", None) is not None
+                    has_uname = bool(getattr(sender, "username", None))
+                    bio_text = ""
+                    try:
+                        full_user = await event.client(functions.users.GetFullUserRequest(sender.id))
+                        bio_text = getattr(full_user.full_user, "about", "") or ""
+                    except Exception:
+                        pass
+                    if cfg.target_premium_only and not is_premium:
+                        skip_reason = f"Нет Premium у {peer_label}"
+                    elif cfg.target_has_photo and not has_photo:
+                        skip_reason = f"Нет фото профиля у {peer_label}"
+                    elif cfg.target_has_username and not has_uname:
+                        skip_reason = f"Нет username у {peer_label}"
+                    elif cfg.target_skip_empty_bio and not bio_text.strip():
+                        skip_reason = f"Пустое био у {peer_label}"
+                    elif cfg.target_min_account_age_days > 0:
+                        try:
+                            from datetime import datetime, timezone
+                            created = getattr(sender, "date", None)
+                            if created:
+                                age_days = (datetime.now(timezone.utc) - created).days
+                                if age_days < cfg.target_min_account_age_days:
+                                    skip_reason = f"Аккаунт {peer_label} слишком новый ({age_days}д < {cfg.target_min_account_age_days}д)"
+                        except Exception:
+                            pass
+                    if skip_reason:
+                        await record_activity(db, owner_id, session_id, chat_id,
+                                              "filtered", f"Фильтр: {skip_reason}")
+                        return
 
                 await record_agent_message(db, owner_id, session_id, chat_id, "in", text[:4000])
                 await record_activity(db, owner_id, session_id, chat_id,
