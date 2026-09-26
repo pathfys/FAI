@@ -291,6 +291,18 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_messages_owner ON agent_messages(owner_id, ts);
 
+-- Detailed agent activity log (every action the agent takes).
+CREATE TABLE IF NOT EXISTS agent_activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT,
+    ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_owner ON agent_activity_log(owner_id, ts);
+
 -- Deal pipeline: tracks each outreach conversation through stages.
 CREATE TABLE IF NOT EXISTS deals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -819,6 +831,20 @@ class AgentMessageOut(BaseModel):
 
 class AgentMessagesPageOut(BaseModel):
     items: list[AgentMessageOut]
+    next_cursor: str | None
+
+
+class AgentActivityOut(BaseModel):
+    id: int
+    session_id: str
+    chat_id: int
+    action: str
+    details: str | None
+    ts: int
+
+
+class AgentActivityPageOut(BaseModel):
+    items: list[AgentActivityOut]
     next_cursor: str | None
 
 
@@ -1526,6 +1552,40 @@ async def record_agent_message(
     return cur.lastrowid
 
 
+async def record_activity(
+    db: aiosqlite.Connection, owner_id: int, session_id: str, chat_id: int,
+    action: str, details: str | None = None,
+) -> None:
+    await db.execute(
+        "INSERT INTO agent_activity_log (owner_id, session_id, chat_id, action, details, ts) VALUES (?, ?, ?, ?, ?, ?)",
+        (owner_id, session_id, chat_id, action, details, now()),
+    )
+    await db.commit()
+
+
+async def list_activity(
+    db: aiosqlite.Connection, owner_id: int, cursor: int | None, limit: int,
+) -> tuple[list[AgentActivityOut], str | None]:
+    where = "owner_id = ?"
+    params: list[Any] = [owner_id]
+    if cursor is not None:
+        where += " AND id < ?"
+        params.append(cursor)
+    rows = await db.execute_fetchall(
+        f"SELECT * FROM agent_activity_log WHERE {where} ORDER BY id DESC LIMIT ?",
+        params + [limit],
+    )
+    items = [
+        AgentActivityOut(
+            id=r["id"], session_id=r["session_id"], chat_id=r["chat_id"],
+            action=r["action"], details=r["details"], ts=r["ts"],
+        )
+        for r in rows
+    ]
+    next_cursor = str(items[-1].id) if items else None
+    return items, next_cursor
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # app/services/deal_store.py
 #   Deal pipeline persistence + dashboard aggregation.
@@ -1664,6 +1724,38 @@ import httpx  # noqa: E402
 agent_log = logging.getLogger("fiesta.agent")
 
 
+def _split_message(text: str, max_len: int = 400) -> list[str]:
+    """Split a long LLM response into natural Telegram-sized chunks."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return [text]
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        return [text]
+    parts: list[str] = []
+    for para in paragraphs:
+        if len(para) <= max_len:
+            parts.append(para)
+        else:
+            sentences = re.split(r"(?<=[.!?])\s+", para)
+            current = ""
+            for sent in sentences:
+                if current and len(current) + len(sent) + 1 > max_len:
+                    parts.append(current.strip())
+                    current = sent
+                else:
+                    current = f"{current} {sent}".strip() if current else sent
+            if current:
+                parts.append(current.strip())
+    merged: list[str] = []
+    for p in parts:
+        if merged and len(merged[-1]) < 30 and len(merged[-1]) + len(p) + 1 <= max_len:
+            merged[-1] = f"{merged[-1]} {p}"
+        else:
+            merged.append(p)
+    return merged or [text]
+
+
 class LLMAgent:
     def __init__(self, api_key: str, base_url: str, default_model: str = "llama-3.3-70b-versatile") -> None:
         self.api_key = api_key
@@ -1681,7 +1773,13 @@ class LLMAgent:
         return bool(self.api_key)
 
     def _build_system(self, profile: AgentProfileOut, examples: list[AgentExampleOut]) -> str:
-        parts = []
+        parts = [
+            "IMPORTANT: Always reply in the SAME LANGUAGE as the user's message. "
+            "If they write in Russian, reply in Russian. If in English, reply in English. "
+            "Detect the language automatically and match it. "
+            "Keep replies concise and natural — write like a real person in a Telegram chat, "
+            "not like a formal letter."
+        ]
         if profile.instructions:
             parts.append(f"Instructions:\n{profile.instructions}")
         if profile.personality:
@@ -1693,7 +1791,7 @@ class LLMAgent:
             for ex in examples[:15]:
                 ex_lines.append(f"Client: {ex.user_text}\nYou: {ex.agent_text}")
             parts.append("Few-shot examples:\n" + "\n---\n".join(ex_lines))
-        if not parts:
+        if len(parts) == 1:
             parts.append("You are a helpful business assistant. Reply concisely and politely.")
         return "\n\n".join(parts)
 
@@ -1838,6 +1936,13 @@ class MessageDispatcher:
         self._clients: dict[str, TelegramClient] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._counters: dict[int, dict[str, int]] = defaultdict(lambda: {"in": 0, "out": 0, "err": 0})
+        self._chat_locks: dict[int, asyncio.Lock] = {}
+        self._msg_tasks: set[asyncio.Task[None]] = set()
+
+    def _chat_lock(self, chat_id: int) -> asyncio.Lock:
+        if chat_id not in self._chat_locks:
+            self._chat_locks[chat_id] = asyncio.Lock()
+        return self._chat_locks[chat_id]
 
     @property
     def active_count(self) -> int:
@@ -1889,22 +1994,14 @@ class MessageDispatcher:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(client.disconnect(), 10)
 
-    async def _listen(self, session_id: str, owner_id: int, client: TelegramClient) -> None:
-        from telethon import events  # noqa: E402
+    async def _handle_message(
+        self, session_id: str, owner_id: int, event: Any, sender: Any,
+    ) -> None:
+        """Handle a single incoming message — runs as a separate task for parallelism."""
+        chat_id = event.chat_id
+        text = event.raw_text or ""
 
-        @client.on(events.NewMessage(incoming=True))
-        async def handler(event: Any) -> None:
-            if not event.is_private:
-                return
-            sender = await event.get_sender()
-            if not sender or getattr(sender, "bot", False):
-                return
-
-            chat_id = event.chat_id
-            text = event.raw_text or ""
-            if not text.strip():
-                return
-
+        async with self._chat_lock(chat_id):
             self._counters[owner_id]["in"] += 1
 
             peer_name = ""
@@ -1917,11 +2014,17 @@ class MessageDispatcher:
             except Exception:
                 pass
 
+            peer_label = peer_username or peer_name.strip() or str(chat_id)
+
             async with connect() as db:
                 await record_agent_message(db, owner_id, session_id, chat_id, "in", text[:4000])
+                await record_activity(db, owner_id, session_id, chat_id,
+                                      "msg_received", f"От {peer_label}: {text[:200]}")
 
                 await upsert_deal(db, owner_id, session_id, chat_id,
                                   peer_name=peer_name.strip(), peer_username=peer_username)
+                await record_activity(db, owner_id, session_id, chat_id,
+                                      "deal_updated", f"Сделка с {peer_label} — стадия: диалог")
 
                 profile = await load_agent_profile(db, owner_id)
                 examples = await list_agent_examples(db, owner_id)
@@ -1943,28 +2046,71 @@ class MessageDispatcher:
             delay = settings.agent_reply_delay_min + (
                 secrets.randbelow(max(1, settings.agent_reply_delay_max - settings.agent_reply_delay_min + 1))
             )
+            async with connect() as db:
+                await record_activity(db, owner_id, session_id, chat_id,
+                                      "delay_wait", f"Ожидание {delay}с перед ответом {peer_label}")
+            dispatch_log.info("waiting %ds before reply to chat=%s", delay, chat_id)
             await asyncio.sleep(delay)
 
             try:
+                async with connect() as db:
+                    await record_activity(db, owner_id, session_id, chat_id,
+                                          "generating", f"Генерация ответа для {peer_label} (модель: {model})")
+
                 reply, used_model, tok_in, tok_out = await self.llm.generate(
                     text, profile, examples, model=model, history=history
                 )
-                await event.respond(reply)
+
+                parts = _split_message(reply)
+                for i, part in enumerate(parts):
+                    if i > 0:
+                        typing_delay = 1 + secrets.randbelow(3)
+                        await asyncio.sleep(typing_delay)
+                    await event.respond(part)
+
                 self._counters[owner_id]["out"] += 1
                 async with connect() as db:
                     await record_agent_message(
                         db, owner_id, session_id, chat_id, "out", reply[:4000],
                         model=used_model, tokens_in=tok_in, tokens_out=tok_out,
                     )
-                dispatch_log.info("replied chat=%s session=%s tokens=%d+%d", chat_id, session_id, tok_in, tok_out)
+                    parts_info = f" ({len(parts)} сообщ.)" if len(parts) > 1 else ""
+                    await record_activity(db, owner_id, session_id, chat_id,
+                                          "reply_sent",
+                                          f"Ответ для {peer_label}{parts_info}, "
+                                          f"токены: {tok_in}+{tok_out}")
+                dispatch_log.info(
+                    "replied chat=%s session=%s parts=%d tokens=%d+%d",
+                    chat_id, session_id, len(parts), tok_in, tok_out,
+                )
             except Exception as e:
                 self._counters[owner_id]["err"] += 1
+                err_text = f"{type(e).__name__}: {e}"[:500]
                 async with connect() as db:
                     await record_agent_message(
-                        db, owner_id, session_id, chat_id, "out", "",
-                        error=f"{type(e).__name__}: {e}"[:500],
+                        db, owner_id, session_id, chat_id, "out", "", error=err_text,
                     )
+                    await record_activity(db, owner_id, session_id, chat_id,
+                                          "reply_error", f"Ошибка для {peer_label}: {err_text}")
                 dispatch_log.error("reply failed chat=%s: %s", chat_id, e)
+
+    async def _listen(self, session_id: str, owner_id: int, client: TelegramClient) -> None:
+        from telethon import events  # noqa: E402
+
+        @client.on(events.NewMessage(incoming=True))
+        async def handler(event: Any) -> None:
+            if not event.is_private:
+                return
+            sender = await event.get_sender()
+            if not sender or getattr(sender, "bot", False):
+                return
+            if not (event.raw_text or "").strip():
+                return
+            task = asyncio.create_task(
+                self._handle_message(session_id, owner_id, event, sender)
+            )
+            self._msg_tasks.add(task)
+            task.add_done_callback(self._msg_tasks.discard)
 
         try:
             await client.run_until_disconnected()
@@ -2639,6 +2785,17 @@ async def get_agent_messages(
             db, user.id, int(cursor) if cursor else None, limit
         )
     return AgentMessagesPageOut(items=items, next_cursor=next_cursor)
+
+
+@agent_router.get("/activity", response_model=AgentActivityPageOut)
+async def get_agent_activity(
+    cursor: str | None = Query(None, pattern=r"^\d{1,19}$"),
+    limit: int = Query(50, ge=1, le=200),
+    user: TgUser = Depends(current_user),
+) -> AgentActivityPageOut:
+    async with connect() as db:
+        items, next_cursor = await list_activity(db, user.id, int(cursor) if cursor else None, limit)
+    return AgentActivityPageOut(items=items, next_cursor=next_cursor)
 
 
 @agent_router.post("/sandbox", response_model=AgentSandboxOut)
