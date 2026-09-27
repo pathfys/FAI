@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS agent_config (
     outreach_delay_min INTEGER NOT NULL DEFAULT 60,
     outreach_delay_max INTEGER NOT NULL DEFAULT 180,
     outreach_text TEXT NOT NULL DEFAULT '',
+    log_channel_id INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
 
@@ -412,6 +413,9 @@ async def init_db() -> None:
         cols = {r[1] for r in await db.execute_fetchall("PRAGMA table_info(sessions)")}
         if "session_file" not in cols:
             await db.execute("ALTER TABLE sessions ADD COLUMN session_file TEXT NOT NULL DEFAULT ''")
+        ac_cols = {r[1] for r in await db.execute_fetchall("PRAGMA table_info(agent_config)")}
+        if "log_channel_id" not in ac_cols:
+            await db.execute("ALTER TABLE agent_config ADD COLUMN log_channel_id INTEGER NOT NULL DEFAULT 0")
         await db.commit()
 
 
@@ -933,6 +937,7 @@ class AgentConfigOut(BaseModel):
     outreach_delay_min: int
     outreach_delay_max: int
     outreach_text: str
+    log_channel_id: int
     updated_at: int
 
 
@@ -969,6 +974,7 @@ class AgentConfigPatch(Strict):
     outreach_delay_min: int | None = Field(None, ge=10, le=3600)
     outreach_delay_max: int | None = Field(None, ge=10, le=3600)
     outreach_text: str | None = Field(None, max_length=2000)
+    log_channel_id: int | None = None
 
 
 class AgentStatsDetailOut(BaseModel):
@@ -1696,6 +1702,79 @@ async def record_agent_message(
     return cur.lastrowid
 
 
+_ACTION_EMOJI = {
+    "msg_received": "\U0001f4e9",
+    "reply_sent": "✉️",
+    "generating": "\U0001f916",
+    "delay_wait": "⏳",
+    "outreach_sent": "\U0001f4e2",
+    "gift_outreach_sent": "\U0001f381",
+    "spam_block": "\U0001f6ab",
+    "outreach_spam_block": "\U0001f6ab",
+    "gift_outreach_spam_block": "\U0001f6ab",
+    "reply_error": "❌",
+    "outreach_error": "❌",
+    "gift_outreach_error": "❌",
+    "skipped": "⏭️",
+    "filtered": "\U0001f50d",
+    "deal_updated": "\U0001f4b0",
+    "spambot": "\U0001f916",
+    "spambot_appeal": "\U0001f916",
+    "gift_parsed": "\U0001f381",
+    "incoming": "\U0001f4e5",
+}
+
+_log_channel_cache: dict[int, int] = {}
+
+log_channel_logger = logging.getLogger("fiesta.log_channel")
+
+
+async def _post_to_log_channel(owner_id: int, action: str, details: str | None) -> None:
+    channel_id = _log_channel_cache.get(owner_id)
+    if channel_id is None:
+        try:
+            async with connect() as db2:
+                row = await (await db2.execute(
+                    "SELECT log_channel_id FROM agent_config WHERE owner_id = ?", (owner_id,)
+                )).fetchone()
+                channel_id = row["log_channel_id"] if row else 0
+        except Exception:
+            channel_id = 0
+        _log_channel_cache[owner_id] = channel_id
+    if not channel_id:
+        return
+
+    emoji = _ACTION_EMOJI.get(action, "\U0001f4cb")
+    ts_str = time.strftime("%H:%M:%S")
+    text = f"{emoji} [{ts_str}] <b>{action}</b>"
+    if details:
+        text += f"\n{details[:3500]}"
+
+    try:
+        async with connect() as db2:
+            sess_row = await (await db2.execute(
+                "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1 LIMIT 1", (owner_id,)
+            )).fetchone()
+        if not sess_row:
+            return
+        path = _file_for(sess_row)
+        if not path.exists() or not settings.telethon_ready:
+            return
+        client = TelegramClient(
+            str(path), settings.api_id, settings.api_hash,
+            device_model="FiestaAI Log", timeout=15,
+        )
+        await asyncio.wait_for(client.connect(), 10)
+        try:
+            if await client.is_user_authorized():
+                await client.send_message(channel_id, text, parse_mode="html")
+        finally:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(client.disconnect(), 5)
+    except Exception as e:
+        log_channel_logger.debug("log channel post failed owner=%s: %s", owner_id, e)
+
+
 async def record_activity(
     db: aiosqlite.Connection, owner_id: int, session_id: str, chat_id: int,
     action: str, details: str | None = None,
@@ -1705,6 +1784,7 @@ async def record_activity(
         (owner_id, session_id, chat_id, action, details, now()),
     )
     await db.commit()
+    asyncio.create_task(_post_to_log_channel(owner_id, action, details))
 
 
 async def list_activity(
@@ -1747,6 +1827,7 @@ _AGENT_CONFIG_COLS = {
     "target_skip_empty_bio",
     "outreach_enabled", "outreach_daily_limit", "outreach_delay_min",
     "outreach_delay_max", "outreach_text",
+    "log_channel_id",
 }
 
 
@@ -1790,6 +1871,7 @@ async def load_agent_config(db: aiosqlite.Connection, owner_id: int) -> AgentCon
         outreach_delay_min=row["outreach_delay_min"],
         outreach_delay_max=row["outreach_delay_max"],
         outreach_text=row["outreach_text"],
+        log_channel_id=row["log_channel_id"],
         updated_at=row["updated_at"],
     )
 
@@ -1811,6 +1893,8 @@ async def update_agent_config(db: aiosqlite.Connection, owner_id: int, changes: 
             (*values, now(), owner_id),
         )
         await db.commit()
+    if "log_channel_id" in changes:
+        _log_channel_cache.pop(owner_id, None)
     return await load_agent_config(db, owner_id)
 
 
@@ -2212,6 +2296,9 @@ async def parse_gifts_for_owner(
 
     await db.commit()
     gift_log.info("parsed %d gifts for owner=%s", count, owner_id)
+    if count > 0:
+        await record_activity(db, owner_id, "", 0, "gift_parsed",
+                              f"Спарсено {count} подарков из каталога")
     return count
 
 
@@ -4052,6 +4139,11 @@ async def _gift_market_outreach_loop(interval: int = 300) -> None:
 
                         if not sellers:
                             continue
+
+                        await record_activity(
+                            db, oid, session_id, 0, "gift_outreach_scan",
+                            f"Найдено {len(sellers)} продавцов на маркете подарков",
+                        )
 
                         for tgt in sellers:
                             try:
