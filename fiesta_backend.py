@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from telethon import TelegramClient
@@ -3960,6 +3960,15 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict[str, bool]:
         return {"ok": True}
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def serve_frontend() -> HTMLResponse:
+        html_path = Path(__file__).with_name("index.html")
+        if not html_path.is_file():
+            html_path = Path(__file__).with_name("fiestaAI1.html")
+        if html_path.is_file():
+            return HTMLResponse(html_path.read_text("utf-8"))
+        return HTMLResponse("<h1>index.html not found</h1>", status_code=404)
 
     app.include_router(stats_router)
     app.include_router(settings_router)
