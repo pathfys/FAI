@@ -3359,8 +3359,13 @@ async def patch_agent_config_endpoint(
     if body.agent_enabled is not None and settings.telethon_ready:
         if body.agent_enabled:
             async with connect() as db:
+                await db.execute(
+                    "UPDATE sessions SET usage_type = 'dispatcher' WHERE owner_id = ? AND is_active = 1",
+                    (user.id,),
+                )
+                await db.commit()
                 rows = await db.execute_fetchall(
-                    "SELECT id, owner_id FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher'",
+                    "SELECT id, owner_id FROM sessions WHERE owner_id = ? AND is_active = 1",
                     (user.id,),
                 )
             for row in rows:
