@@ -3234,10 +3234,14 @@ async def agent_status(
             "SELECT COUNT(*) AS c FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher'",
             (user.id,),
         )
+    async with connect() as db:
+        cfg = await load_agent_config(db, user.id)
+    dispatcher_running = len(dispatcher.sessions_for_owner(user.id)) > 0
+    db_sessions = rows[0]["c"] if rows else 0
     return AgentStatusOut(
-        enabled=len(dispatcher.sessions_for_owner(user.id)) > 0,
+        enabled=cfg.agent_enabled and (dispatcher_running or db_sessions > 0),
         llm_ready=llm.ready,
-        active_sessions=rows[0]["c"] if rows else 0,
+        active_sessions=db_sessions,
         incoming_today=counters.get("in", 0),
         handled_today=counters.get("out", 0),
         errors_today=counters.get("err", 0),
@@ -3803,13 +3807,37 @@ async def _outreach_loop(interval: int = 30) -> None:
                             if len(targets) >= cfg.outreach_daily_limit - sent_today:
                                 break
 
-                    if not targets:
-                        continue
-
                     client = TelegramClient(
                         str(path), settings.api_id, settings.api_hash,
                         device_model="FiestaAI Outreach", timeout=20,
                     )
+
+                    if not targets:
+                        try:
+                            await asyncio.wait_for(client.connect(), 20)
+                            if not await client.is_user_authorized():
+                                with contextlib.suppress(Exception):
+                                    await asyncio.wait_for(client.disconnect(), 10)
+                                continue
+                            needed = cfg.outreach_daily_limit - sent_today
+                            async for dialog in client.iter_dialogs(limit=200):
+                                if len(targets) >= needed:
+                                    break
+                                if not dialog.is_user or dialog.entity is None:
+                                    continue
+                                uid = dialog.entity.id
+                                if getattr(dialog.entity, "bot", False):
+                                    continue
+                                if uid <= 0 or uid == oid or uid in already_contacted or uid in known_chats:
+                                    continue
+                                targets.append({"user_id": uid, "username": getattr(dialog.entity, "username", None)})
+                        except Exception as exc:
+                            outreach_log_mod.debug("dialog scan failed owner=%s: %s", oid, exc)
+
+                    if not targets:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(client.disconnect(), 10)
+                        continue
                     try:
                         await asyncio.wait_for(client.connect(), 20)
                         if not await client.is_user_authorized():
