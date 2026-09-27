@@ -3623,20 +3623,19 @@ async def _run_manual_outreach(owner_id: int) -> None:
     try:
         async with connect() as db:
             cfg = await load_agent_config(db, owner_id)
-            sess_rows = await db.execute_fetchall(
-                "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher' LIMIT 1",
-                (owner_id,),
-            )
-            if not sess_rows:
-                _log("Нет активных сессий диспатчера")
-                st["running"] = False
-                return
-            sess = sess_rows[0]
-            session_id = sess["id"]
-
             all_sessions = await db.execute_fetchall(
                 "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1", (owner_id,)
             )
+            if not all_sessions:
+                _log("Нет активных сессий — добавьте аккаунт в разделе Sessions")
+                st["running"] = False
+                return
+            sess_rows = [s for s in all_sessions if s["usage_type"] == "dispatcher"]
+            if not sess_rows:
+                sess_rows = list(all_sessions)
+                _log("Нет dispatcher-сессий, использую первую активную")
+            sess = sess_rows[0]
+            session_id = sess["id"]
             parser_sess = None
             for s in all_sessions:
                 if s["id"] != session_id:
