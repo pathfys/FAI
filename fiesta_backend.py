@@ -2258,6 +2258,7 @@ class MessageDispatcher:
         self.sessions_dir = sessions_dir
         self._clients: dict[str, TelegramClient] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._owners: dict[str, int] = {}
         self._counters: dict[int, dict[str, int]] = defaultdict(lambda: {"in": 0, "out": 0, "err": 0})
         self._chat_locks: dict[int, asyncio.Lock] = {}
         self._msg_tasks: set[asyncio.Task[None]] = set()
@@ -2270,6 +2271,9 @@ class MessageDispatcher:
     @property
     def active_count(self) -> int:
         return len(self._clients)
+
+    def sessions_for_owner(self, owner_id: int) -> list[str]:
+        return [sid for sid, oid in self._owners.items() if oid == owner_id]
 
     def counters_for(self, owner_id: int) -> dict[str, int]:
         return self._counters[owner_id]
@@ -2364,6 +2368,7 @@ class MessageDispatcher:
             return False
 
         self._clients[session_id] = client
+        self._owners[session_id] = owner_id
         self._tasks[session_id] = asyncio.create_task(
             self._listen(session_id, owner_id, client)
         )
@@ -2372,6 +2377,7 @@ class MessageDispatcher:
 
     async def stop_session(self, session_id: str) -> None:
         task = self._tasks.pop(session_id, None)
+        self._owners.pop(session_id, None)
         if task:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -3221,7 +3227,7 @@ async def agent_status(
             (user.id,),
         )
     return AgentStatusOut(
-        enabled=dispatcher.active_count > 0,
+        enabled=len(dispatcher.sessions_for_owner(user.id)) > 0,
         llm_ready=llm.ready,
         active_sessions=rows[0]["c"] if rows else 0,
         incoming_today=counters.get("in", 0),
@@ -3337,9 +3343,27 @@ async def get_agent_config_endpoint(
 async def patch_agent_config_endpoint(
     body: AgentConfigPatch,
     user: TgUser = Depends(current_user),
+    dispatcher: MessageDispatcher = Depends(_dispatcher),
 ) -> AgentConfigOut:
     async with connect() as db:
-        return await update_agent_config(db, user.id, body)
+        result = await update_agent_config(db, user.id, body)
+
+    if body.agent_enabled is not None and settings.telethon_ready:
+        if body.agent_enabled:
+            async with connect() as db:
+                rows = await db.execute_fetchall(
+                    "SELECT id, owner_id FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher'",
+                    (user.id,),
+                )
+            for row in rows:
+                with contextlib.suppress(Exception):
+                    await dispatcher.start_session(row["id"], row["owner_id"])
+        else:
+            for sid in dispatcher.sessions_for_owner(user.id):
+                with contextlib.suppress(Exception):
+                    await dispatcher.stop_session(sid)
+
+    return result
 
 
 @agent_router.get("/stats", response_model=AgentStatsDetailOut)
