@@ -3752,7 +3752,7 @@ async def _outreach_loop(interval: int = 30) -> None:
                 for orow in owners:
                     oid = orow["owner_id"]
                     cfg = await load_agent_config(db, oid)
-                    if not cfg.outreach_enabled or not cfg.outreach_text.strip():
+                    if not cfg.agent_enabled or not cfg.outreach_text.strip():
                         continue
 
                     today_start = int(time.time()) - (int(time.time()) % 86400)
