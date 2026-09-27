@@ -3584,6 +3584,11 @@ async def outreach_start_endpoint(
     if not settings.telethon_ready:
         return {"ok": False, "error": "telethon_not_configured"}
 
+    _outreach_status[user.id] = {
+        "running": True, "sent": 0, "total_sellers": 0,
+        "errors": 0, "last_target": None, "started_at": now(),
+        "log": [], "stop_requested": False,
+    }
     asyncio.create_task(_run_manual_outreach(user.id))
     return {"ok": True}
 
@@ -3602,10 +3607,12 @@ async def _run_manual_outreach(owner_id: int) -> None:
     """One-shot outreach triggered by the user button."""
     from telethon.tl import functions as tl_functions
 
-    st: dict = {"running": True, "sent": 0, "total_sellers": 0,
-                "errors": 0, "last_target": None, "started_at": now(),
-                "log": [], "stop_requested": False}
-    _outreach_status[owner_id] = st
+    st = _outreach_status.get(owner_id)
+    if st is None:
+        st = {"running": True, "sent": 0, "total_sellers": 0,
+              "errors": 0, "last_target": None, "started_at": now(),
+              "log": [], "stop_requested": False}
+        _outreach_status[owner_id] = st
 
     def _log(msg: str) -> None:
         ts_str = time.strftime("%H:%M:%S")
