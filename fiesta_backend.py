@@ -620,6 +620,8 @@ class StatsOut(BaseModel):
     diagnostic_mode: bool
     last_activity_at: int | None
     dispatcher_db: bool
+    tokens_today: int
+    tokens_total: int
 
 
 # ─── settings ────────────────────────────────────────────────────────────────
@@ -3237,6 +3239,16 @@ async def stats(user: TgUser = Depends(current_user)) -> StatsOut:
         counts = await today_counts(db, user.id, settings.app_tz)
         beat = await read_heartbeat(db)
 
+        today_start = now() - (now() % 86400)
+        tok_today_row = await db.execute_fetchall(
+            "SELECT COALESCE(SUM(COALESCE(tokens_in,0)+COALESCE(tokens_out,0)),0) AS t FROM agent_messages WHERE owner_id = ? AND ts >= ?",
+            (user.id, today_start),
+        )
+        tok_total_row = await db.execute_fetchall(
+            "SELECT COALESCE(SUM(COALESCE(tokens_in,0)+COALESCE(tokens_out,0)),0) AS t FROM agent_messages WHERE owner_id = ?",
+            (user.id,),
+        )
+
     if beat is None:
         status = "unknown"
     else:
@@ -3254,6 +3266,8 @@ async def stats(user: TgUser = Depends(current_user)) -> StatsOut:
         diagnostic_mode=user_settings.diagnostic_mode,
         last_activity_at=counts["last_activity_at"],
         dispatcher_db=counts["available"],
+        tokens_today=tok_today_row[0]["t"],
+        tokens_total=tok_total_row[0]["t"],
     )
 
 
