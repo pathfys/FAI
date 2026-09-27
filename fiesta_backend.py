@@ -233,7 +233,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
     reply_delay_max INTEGER NOT NULL DEFAULT 60,
     manual_pause_minutes INTEGER NOT NULL DEFAULT 30,
     fewshot_limit INTEGER NOT NULL DEFAULT 15,
-    groq_model TEXT NOT NULL DEFAULT 'llama-3.3-70b-versatile',
+    groq_model TEXT NOT NULL DEFAULT 'llama-3.3-70b-specdec',
     diagnostic_mode INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
@@ -570,8 +570,8 @@ def reset_rate_limits() -> None:
 # ════════════════════════════════════════════════════════════════════════════
 
 UsageType = Literal["monitor", "dispatcher"]
-GroqModel = Literal["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-GROQ_MODELS: list[str] = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+GroqModel = Literal["llama-3.3-70b-specdec", "llama-3.1-8b-instant"]
+GROQ_MODELS: list[str] = ["llama-3.3-70b-specdec", "llama-3.1-8b-instant"]
 ChatFilterKind = Literal["whitelist", "blacklist"]
 LogFilter = Literal["all", "client_bot", "manual", "errors"]
 LogKind = Literal["incoming", "bot", "manual", "draft", "error"]
@@ -1794,7 +1794,11 @@ async def load_agent_config(db: aiosqlite.Connection, owner_id: int) -> AgentCon
     )
 
 
-async def update_agent_config(db: aiosqlite.Connection, owner_id: int, changes: dict[str, Any]) -> AgentConfigOut:
+async def update_agent_config(db: aiosqlite.Connection, owner_id: int, changes: Any) -> AgentConfigOut:
+    if hasattr(changes, "model_dump"):
+        changes = changes.model_dump(exclude_unset=True)
+    elif hasattr(changes, "dict"):
+        changes = changes.dict(exclude_unset=True)
     changes = {k: v for k, v in changes.items() if k in _AGENT_CONFIG_COLS and v is not None}
     if changes:
         for k in changes:
@@ -2063,7 +2067,7 @@ def _split_message(text: str, max_len: int = 400) -> list[str]:
 
 
 class LLMAgent:
-    def __init__(self, api_key: str, base_url: str, default_model: str = "llama-3.3-70b-versatile") -> None:
+    def __init__(self, api_key: str, base_url: str, default_model: str = "llama-3.3-70b-specdec") -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
@@ -2506,7 +2510,7 @@ class MessageDispatcher:
                 user_settings_row = await (
                     await db.execute("SELECT groq_model FROM user_settings WHERE owner_id = ?", (owner_id,))
                 ).fetchone()
-                model = user_settings_row["groq_model"] if user_settings_row else "llama-3.3-70b-versatile"
+                model = user_settings_row["groq_model"] if user_settings_row else "llama-3.3-70b-specdec"
 
                 ctx_limit = cfg.context_messages
                 recent = await db.execute_fetchall(
@@ -3214,6 +3218,10 @@ def _dispatcher(request: Request) -> MessageDispatcher:
     return request.app.state.dispatcher
 
 
+def logins(request: Request) -> LoginManager:
+    return request.app.state.logins
+
+
 @agent_router.get("/status", response_model=AgentStatusOut)
 async def agent_status(
     user: TgUser = Depends(current_user),
@@ -3470,10 +3478,6 @@ sessions_log = logging.getLogger("fiesta.sessions")
 sessions_router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 SessionId = PathParam(pattern=r"^[A-Za-z0-9_]{1,64}$")
-
-
-def logins(request: Request) -> LoginManager:
-    return request.app.state.logins
 
 
 def _raise(e: LoginError) -> None:
