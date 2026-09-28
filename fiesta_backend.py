@@ -3633,7 +3633,9 @@ async def _run_manual_outreach(owner_id: int) -> None:
             sess_rows = [s for s in all_sessions if s["usage_type"] == "dispatcher"]
             if not sess_rows:
                 sess_rows = list(all_sessions)
-                _log("Нет dispatcher-сессий, использую первую активную")
+                _log("ВНИМАНИЕ: нет сессий типа 'dispatcher'. Рассылка пойдёт, "
+                     "но LLM не будет отвечать на ответы — смените тип сессии на "
+                     "'dispatcher' в разделе Sessions")
             sess = sess_rows[0]
             session_id = sess["id"]
             parser_sess = None
