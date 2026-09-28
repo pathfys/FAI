@@ -3653,15 +3653,17 @@ async def _run_manual_outreach(owner_id: int) -> None:
             }
             today_start = int(time.time()) - (int(time.time()) % 86400)
             sent_today = (await db.execute_fetchall(
-                "SELECT COUNT(*) FROM outreach_log WHERE owner_id = ? AND ts >= ?",
+                "SELECT COUNT(*) FROM outreach_log WHERE owner_id = ? AND ts >= ? AND status = 'sent'",
                 (owner_id, today_start),
             ))[0][0]
 
         needed = cfg.outreach_daily_limit - sent_today
         if needed <= 0:
-            _log(f"Дневной лимит исчерпан ({cfg.outreach_daily_limit})")
+            _log(f"Дневной лимит исчерпан: {sent_today}/{cfg.outreach_daily_limit}. "
+                 f"Поднимите лимит в настройках или ждите сброса в полночь UTC")
             st["running"] = False
             return
+        _log(f"Лимит на сегодня: {sent_today}/{cfg.outreach_daily_limit}, можно отправить {needed}")
 
         _log("Подключаюсь к Telegram для парсинга маркета...")
         parser_path = _file_for(parser_sess)
@@ -3690,6 +3692,16 @@ async def _run_manual_outreach(owner_id: int) -> None:
         catalog_gifts = getattr(catalog, "gifts", []) or []
         _log(f"В каталоге {len(catalog_gifts)} подарков, ищу resale...")
 
+        if not hasattr(tl_functions.payments, "GetResaleStarGiftsRequest"):
+            _log("Ваша версия Telethon не поддерживает маркет перепродажи. "
+                 "Обновите: pip install -U telethon")
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(parser_client.disconnect(), 5)
+            st["running"] = False
+            return
+
+        resale_gift_count = 0
+        skipped_contacted = 0
         sellers: list[dict] = []
         for g in catalog_gifts:
             if st.get("stop_requested"):
@@ -3704,6 +3716,7 @@ async def _run_manual_outreach(owner_id: int) -> None:
             if gift_id is None:
                 continue
             gift_title = getattr(g, "title", "") or f"#{gift_id}"
+            resale_gift_count += 1
             _log(f"Подарок {gift_title}: {resale_count} в продаже, сканирую продавцов...")
 
             try:
@@ -3738,7 +3751,10 @@ async def _run_manual_outreach(owner_id: int) -> None:
                     seller_id = getattr(owner_peer, "channel_id", None)
                 if not seller_id or seller_id <= 0:
                     continue
-                if seller_id == owner_id or seller_id in already_contacted:
+                if seller_id == owner_id:
+                    continue
+                if seller_id in already_contacted:
+                    skipped_contacted += 1
                     continue
                 already_contacted.add(seller_id)
                 user_obj = users_by_id.get(seller_id)
@@ -3755,7 +3771,12 @@ async def _run_manual_outreach(owner_id: int) -> None:
 
         st["total_sellers"] = len(sellers)
         if not sellers:
-            _log("Продавцов не найдено")
+            if resale_gift_count == 0:
+                _log("На маркете сейчас нет подарков в перепродаже — попробуйте позже")
+            elif skipped_contacted:
+                _log(f"Новых продавцов нет: всем {skipped_contacted} уже писали ранее")
+            else:
+                _log(f"Продавцов не найдено (просканировано {resale_gift_count} подарков)")
             st["running"] = False
             return
         _log(f"Найдено {len(sellers)} продавцов, начинаю рассылку...")
@@ -4215,410 +4236,49 @@ async def _gift_loop(interval: int) -> None:
 outreach_log_mod = logging.getLogger("fiesta.outreach")
 
 
-async def _outreach_loop(interval: int = 30) -> None:
-    """Periodically sends outreach messages from owners with outreach enabled."""
-    from telethon.tl import functions
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            async with connect() as db:
-                owners = await db.execute_fetchall(
-                    "SELECT DISTINCT owner_id FROM sessions WHERE is_active = 1 AND usage_type = 'dispatcher'"
-                )
-                for orow in owners:
-                    oid = orow["owner_id"]
-                    cfg = await load_agent_config(db, oid)
-                    if not cfg.agent_enabled or not cfg.outreach_text.strip():
-                        continue
-
-                    today_start = int(time.time()) - (int(time.time()) % 86400)
-                    sent_today = (await db.execute_fetchall(
-                        "SELECT COUNT(*) FROM outreach_log WHERE owner_id = ? AND ts >= ?",
-                        (oid, today_start),
-                    ))[0][0]
-                    if sent_today >= cfg.outreach_daily_limit:
-                        continue
-
-                    sess_rows = await db.execute_fetchall(
-                        "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher' LIMIT 1",
-                        (oid,),
-                    )
-                    if not sess_rows:
-                        continue
-                    sess = sess_rows[0]
-                    session_id = sess["id"]
-                    path = _file_for(sess)
-                    if not path.exists() or not settings.telethon_ready:
-                        continue
-
-                    already_contacted = {
-                        r[0] for r in await db.execute_fetchall(
-                            "SELECT target_user_id FROM outreach_log WHERE owner_id = ?", (oid,)
-                        )
-                    }
-
-                    targets: list[dict] = []
-                    msg_rows = await db.execute_fetchall(
-                        "SELECT DISTINCT chat_id FROM agent_messages WHERE owner_id = ?", (oid,)
-                    )
-                    known_chats = {r["chat_id"] for r in msg_rows}
-
-                    act_rows = await db.execute_fetchall(
-                        "SELECT DISTINCT chat_id FROM agent_activity_log WHERE owner_id = ? AND action = 'incoming' ORDER BY id DESC LIMIT 500",
-                        (oid,),
-                    )
-                    for ar in act_rows:
-                        uid = ar["chat_id"]
-                        if uid > 0 and uid not in already_contacted and uid != oid and uid not in known_chats:
-                            targets.append({"user_id": uid, "username": None})
-                            if len(targets) >= cfg.outreach_daily_limit - sent_today:
-                                break
-
-                    client = TelegramClient(
-                        str(path), settings.api_id, settings.api_hash,
-                        device_model="FiestaAI Outreach", timeout=20,
-                    )
-
-                    if not targets:
-                        try:
-                            await asyncio.wait_for(client.connect(), 20)
-                            if not await client.is_user_authorized():
-                                with contextlib.suppress(Exception):
-                                    await asyncio.wait_for(client.disconnect(), 10)
-                                continue
-                            needed = cfg.outreach_daily_limit - sent_today
-                            async for dialog in client.iter_dialogs(limit=200):
-                                if len(targets) >= needed:
-                                    break
-                                if not dialog.is_user or dialog.entity is None:
-                                    continue
-                                uid = dialog.entity.id
-                                if getattr(dialog.entity, "bot", False):
-                                    continue
-                                if uid <= 0 or uid == oid or uid in already_contacted or uid in known_chats:
-                                    continue
-                                targets.append({"user_id": uid, "username": getattr(dialog.entity, "username", None)})
-                        except Exception as exc:
-                            outreach_log_mod.debug("dialog scan failed owner=%s: %s", oid, exc)
-
-                    if not targets:
-                        with contextlib.suppress(Exception):
-                            await asyncio.wait_for(client.disconnect(), 10)
-                        continue
-                    try:
-                        await asyncio.wait_for(client.connect(), 20)
-                        if not await client.is_user_authorized():
-                            continue
-
-                        for tgt in targets:
-                            try:
-                                entity = await client.get_entity(tgt["user_id"])
-                                uname = getattr(entity, "username", None)
-
-                                if cfg.target_filter_enabled:
-                                    is_premium = getattr(entity, "premium", False)
-                                    has_photo = getattr(entity, "photo", None) is not None
-                                    has_uname = bool(uname)
-                                    if cfg.target_premium_only and not is_premium:
-                                        continue
-                                    if cfg.target_has_photo and not has_photo:
-                                        continue
-                                    if cfg.target_has_username and not has_uname:
-                                        continue
-                                    if cfg.target_skip_empty_bio:
-                                        try:
-                                            full = await client(functions.users.GetFullUserRequest(tgt["user_id"]))
-                                            bio = getattr(full.full_user, "about", "") or ""
-                                            if not bio.strip():
-                                                continue
-                                        except Exception:
-                                            pass
-
-                                await client.send_message(tgt["user_id"], cfg.outreach_text)
-
-                                await db.execute(
-                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'sent', ?)",
-                                    (oid, session_id, tgt["user_id"], uname, now()),
-                                )
-                                await record_activity(db, oid, session_id, tgt["user_id"],
-                                                      "outreach_sent",
-                                                      f"Рассылка для @{uname or tgt['user_id']}")
-                                await record_agent_message(
-                                    db, oid, session_id, tgt["user_id"], "out",
-                                    cfg.outreach_text[:4000], model="outreach",
-                                )
-                                await db.commit()
-                                outreach_log_mod.info("outreach sent owner=%s target=%s", oid, tgt["user_id"])
-
-                                delay = cfg.outreach_delay_min + secrets.randbelow(
-                                    max(1, cfg.outreach_delay_max - cfg.outreach_delay_min + 1)
-                                )
-                                await asyncio.sleep(delay)
-
-                                sent_today += 1
-                                if sent_today >= cfg.outreach_daily_limit:
-                                    break
-
-                            except (
-                                tg.ChatWriteForbiddenError,
-                                tg.UserBannedInChannelError,
-                                tg.PeerFloodError,
-                            ) as e:
-                                await db.execute(
-                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'spam_block', ?)",
-                                    (oid, session_id, tgt["user_id"], None, now()),
-                                )
-                                await record_activity(db, oid, session_id, tgt["user_id"],
-                                                      "outreach_spam_block",
-                                                      f"Спамблок при рассылке: {type(e).__name__}")
-                                await db.commit()
-                                outreach_log_mod.warning("outreach spam block owner=%s: %s", oid, e)
-                                break
-                            except Exception as e:
-                                await db.execute(
-                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'error', ?)",
-                                    (oid, session_id, tgt["user_id"], None, now()),
-                                )
-                                await record_activity(db, oid, session_id, tgt["user_id"],
-                                                      "outreach_error",
-                                                      f"Ошибка рассылки: {type(e).__name__}: {e}"[:300])
-                                await db.commit()
-                                outreach_log_mod.debug("outreach error owner=%s target=%s: %s", oid, tgt["user_id"], e)
-
-                    except Exception as e:
-                        outreach_log_mod.debug("outreach loop skip owner=%s: %s", oid, e)
-                    finally:
-                        with contextlib.suppress(Exception):
-                            await asyncio.wait_for(client.disconnect(), 10)
-        except Exception as e:
-            outreach_log_mod.error("outreach loop error: %s", e)
-
-
 gift_outreach_log = logging.getLogger("fiesta.gift_outreach")
 
 
 async def _gift_market_outreach_loop(interval: int = 300) -> None:
-    """Parses Telegram Star Gift marketplace for resale sellers and sends outreach_text."""
-    from telethon.tl import functions as tl_functions
+    """Automatic gift-marketplace outreach for every owner with the agent enabled.
 
+    Reuses the exact engine the manual button runs, so both paths behave
+    identically: parse the Star Gift marketplace, pick resale sellers, message
+    them, and let the dispatcher's LLM take over the conversation from there.
+    """
+    await asyncio.sleep(15)
     while True:
-        await asyncio.sleep(interval)
         try:
             async with connect() as db:
                 owners = await db.execute_fetchall(
-                    "SELECT DISTINCT owner_id FROM sessions WHERE is_active = 1 AND usage_type = 'dispatcher'"
+                    "SELECT DISTINCT owner_id FROM sessions WHERE is_active = 1"
                 )
+                candidates = []
                 for orow in owners:
                     oid = orow["owner_id"]
                     cfg = await load_agent_config(db, oid)
-                    if not cfg.agent_enabled or not cfg.outreach_text.strip():
-                        continue
+                    if cfg.agent_enabled and cfg.outreach_text.strip():
+                        candidates.append(oid)
 
-                    today_start = int(time.time()) - (int(time.time()) % 86400)
-                    sent_today = (await db.execute_fetchall(
-                        "SELECT COUNT(*) FROM outreach_log WHERE owner_id = ? AND ts >= ?",
-                        (oid, today_start),
-                    ))[0][0]
-                    if sent_today >= cfg.outreach_daily_limit:
-                        continue
-
-                    sess_rows = await db.execute_fetchall(
-                        "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1 AND usage_type = 'dispatcher' LIMIT 1",
-                        (oid,),
-                    )
-                    if not sess_rows:
-                        continue
-                    sess = sess_rows[0]
-                    session_id = sess["id"]
-                    path = _file_for(sess)
-                    if not path.exists() or not settings.telethon_ready:
-                        continue
-
-                    already_contacted = {
-                        r[0] for r in await db.execute_fetchall(
-                            "SELECT target_user_id FROM outreach_log WHERE owner_id = ?", (oid,)
-                        )
-                    }
-
-                    client = TelegramClient(
-                        str(path), settings.api_id, settings.api_hash,
-                        device_model="FiestaAI GiftMarket", timeout=30,
-                    )
-                    try:
-                        await asyncio.wait_for(client.connect(), 20)
-                        if not await client.is_user_authorized():
-                            continue
-
-                        try:
-                            catalog = await client(tl_functions.payments.GetStarGiftsRequest(hash=0))
-                        except Exception as e:
-                            gift_outreach_log.warning("GetStarGiftsRequest failed owner=%s: %s", oid, e)
-                            continue
-
-                        catalog_gifts = getattr(catalog, "gifts", []) or []
-                        sellers: list[dict] = []
-                        needed = cfg.outreach_daily_limit - sent_today
-
-                        for g in catalog_gifts:
-                            if len(sellers) >= needed:
-                                break
-                            resale_count = getattr(g, "availability_resale", 0) or 0
-                            if resale_count <= 0:
-                                continue
-                            gift_id = getattr(g, "id", None)
-                            if gift_id is None:
-                                continue
-
-                            try:
-                                resale_result = await client(
-                                    tl_functions.payments.GetResaleStarGiftsRequest(
-                                        gift_id=gift_id, offset="", limit=50
-                                    )
-                                )
-                            except AttributeError:
-                                gift_outreach_log.warning(
-                                    "GetResaleStarGiftsRequest not available in this Telethon version"
-                                )
-                                break
-                            except Exception as e:
-                                gift_outreach_log.debug(
-                                    "GetResaleStarGiftsRequest failed gift=%s: %s", gift_id, e
-                                )
-                                continue
-
-                            users_list = getattr(resale_result, "users", []) or []
-                            users_by_id = {}
-                            for u in users_list:
-                                uid = getattr(u, "id", None)
-                                if uid:
-                                    users_by_id[uid] = u
-
-                            resale_gifts = getattr(resale_result, "gifts", []) or []
-                            for rg in resale_gifts:
-                                if len(sellers) >= needed:
-                                    break
-                                owner_peer = getattr(rg, "owner_id", None)
-                                if owner_peer is None:
-                                    continue
-                                seller_id = getattr(owner_peer, "user_id", None)
-                                if seller_id is None:
-                                    seller_id = getattr(owner_peer, "channel_id", None)
-                                if not seller_id or seller_id <= 0:
-                                    continue
-                                if seller_id == oid or seller_id in already_contacted:
-                                    continue
-                                already_contacted.add(seller_id)
-                                user_obj = users_by_id.get(seller_id)
-                                uname = getattr(user_obj, "username", None) if user_obj else None
-                                is_bot = getattr(user_obj, "bot", False) if user_obj else False
-                                if is_bot:
-                                    continue
-                                sellers.append({"user_id": seller_id, "username": uname})
-
-                            await asyncio.sleep(1)
-
-                        if not sellers:
-                            continue
-
-                        await record_activity(
-                            db, oid, session_id, 0, "gift_outreach_scan",
-                            f"Найдено {len(sellers)} продавцов на маркете подарков",
-                        )
-
-                        for tgt in sellers:
-                            try:
-                                entity = await client.get_entity(tgt["user_id"])
-                                uname = getattr(entity, "username", None)
-
-                                if cfg.target_filter_enabled:
-                                    is_premium = getattr(entity, "premium", False)
-                                    has_photo = getattr(entity, "photo", None) is not None
-                                    has_uname = bool(uname)
-                                    if cfg.target_premium_only and not is_premium:
-                                        continue
-                                    if cfg.target_has_photo and not has_photo:
-                                        continue
-                                    if cfg.target_has_username and not has_uname:
-                                        continue
-                                    if cfg.target_skip_empty_bio:
-                                        try:
-                                            full = await client(
-                                                tl_functions.users.GetFullUserRequest(tgt["user_id"])
-                                            )
-                                            bio = getattr(full.full_user, "about", "") or ""
-                                            if not bio.strip():
-                                                continue
-                                        except Exception:
-                                            pass
-
-                                await client.send_message(tgt["user_id"], cfg.outreach_text)
-
-                                await db.execute(
-                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'sent', ?)",
-                                    (oid, session_id, tgt["user_id"], uname, now()),
-                                )
-                                await record_activity(
-                                    db, oid, session_id, tgt["user_id"],
-                                    "gift_outreach_sent",
-                                    f"Gift marketplace рассылка @{uname or tgt['user_id']}",
-                                )
-                                await record_agent_message(
-                                    db, oid, session_id, tgt["user_id"], "out",
-                                    cfg.outreach_text[:4000], model="gift_outreach",
-                                )
-                                await db.commit()
-                                gift_outreach_log.info(
-                                    "gift outreach sent owner=%s target=%s", oid, tgt["user_id"]
-                                )
-
-                                delay = cfg.outreach_delay_min + secrets.randbelow(
-                                    max(1, cfg.outreach_delay_max - cfg.outreach_delay_min + 1)
-                                )
-                                await asyncio.sleep(delay)
-
-                                sent_today += 1
-                                if sent_today >= cfg.outreach_daily_limit:
-                                    break
-
-                            except (
-                                tg.ChatWriteForbiddenError,
-                                tg.UserBannedInChannelError,
-                                tg.PeerFloodError,
-                            ) as e:
-                                await db.execute(
-                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'spam_block', ?)",
-                                    (oid, session_id, tgt["user_id"], None, now()),
-                                )
-                                await record_activity(
-                                    db, oid, session_id, tgt["user_id"],
-                                    "gift_outreach_spam_block",
-                                    f"Спамблок gift рассылки: {type(e).__name__}",
-                                )
-                                await db.commit()
-                                gift_outreach_log.warning("gift outreach spam block owner=%s: %s", oid, e)
-                                break
-                            except Exception as e:
-                                await db.execute(
-                                    "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'error', ?)",
-                                    (oid, session_id, tgt["user_id"], None, now()),
-                                )
-                                await record_activity(
-                                    db, oid, session_id, tgt["user_id"],
-                                    "gift_outreach_error",
-                                    f"Ошибка gift рассылки: {type(e).__name__}: {e}"[:300],
-                                )
-                                await db.commit()
-                                gift_outreach_log.debug(
-                                    "gift outreach error owner=%s target=%s: %s", oid, tgt["user_id"], e
-                                )
-
-                    except Exception as e:
-                        gift_outreach_log.debug("gift outreach loop skip owner=%s: %s", oid, e)
-                    finally:
-                        with contextlib.suppress(Exception):
-                            await asyncio.wait_for(client.disconnect(), 10)
+            for oid in candidates:
+                st = _outreach_status.get(oid)
+                if st and st.get("running"):
+                    continue
+                if not settings.telethon_ready:
+                    continue
+                _outreach_status[oid] = {
+                    "running": True, "sent": 0, "total_sellers": 0,
+                    "errors": 0, "last_target": None, "started_at": now(),
+                    "log": [], "stop_requested": False, "auto": True,
+                }
+                try:
+                    await _run_manual_outreach(oid)
+                except Exception as e:
+                    gift_outreach_log.error("auto outreach failed owner=%s: %s", oid, e)
+                    _outreach_status[oid]["running"] = False
         except Exception as e:
             gift_outreach_log.error("gift outreach loop error: %s", e)
+        await asyncio.sleep(interval)
 
 
 async def _auto_start_dispatchers(dispatcher: MessageDispatcher) -> None:
@@ -4661,7 +4321,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     janitor = asyncio.create_task(_janitor(manager))
     gift_task = asyncio.create_task(_gift_loop(settings.gift_parse_interval))
-    outreach_task = asyncio.create_task(_outreach_loop(30))
     gift_outreach_task = asyncio.create_task(_gift_market_outreach_loop(300))
     log_worker_task = asyncio.create_task(_log_channel_worker())
 
@@ -4679,7 +4338,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         janitor.cancel()
         gift_task.cancel()
-        outreach_task.cancel()
         gift_outreach_task.cancel()
         log_worker_task.cancel()
         await dispatcher.shutdown()
