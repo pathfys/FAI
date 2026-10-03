@@ -3750,25 +3750,33 @@ async def _run_manual_outreach(owner_id: int) -> None:
 
         # ── verify the SENDER account is actually authorized ─────────────────
         # A dead/banned session still "connects" but every request fails with
-        # AuthKeyUnregistered ("key is not registered"). Catch it once here
-        # instead of logging the same error for all 72 sellers.
-        async def _alive(c) -> bool:
+        # AuthKeyUnregistered ("key is not registered"). Catch it once here,
+        # naming the account, instead of logging it for all 72 sellers.
+        async def _whoami(c):
             try:
-                return await c.get_me() is not None
+                me = await c.get_me()
+                if me is None:
+                    return None
+                return (getattr(me, "username", None) and f"@{me.username}") or \
+                       (getattr(me, "first_name", "") or "").strip() or \
+                       str(getattr(me, "id", "?"))
             except Exception:
-                return False
+                return None
 
-        if not await _alive(send_client):
-            _log("Аккаунт отправки НЕ авторизован в Telegram — сессия разлогинена "
-                 "или заблокирована. Переавторизуйте его в разделе Sessions.")
-            if parser_client is not send_client and await _alive(parser_client):
-                _log("Отправляю с аккаунта парсинга, чтобы рассылка не стояла. "
-                     "ВНИМАНИЕ: ответы LLM с него могут не приходить — почините "
-                     "аккаунт 'Отписи и ответы'.")
+        send_who = await _whoami(send_client)
+        if send_who is None:
+            _log("Аккаунт отправки НЕ авторизован (ключ не зарегистрирован) — сессия "
+                 "разлогинена или аккаунт заблокирован Telegram. Переавторизуйте в Sessions.")
+            parser_who = await _whoami(parser_client) if parser_client is not send_client else None
+            if parser_who is not None:
+                _log(f"Отправляю с аккаунта парсинга ({parser_who}), чтобы рассылка не "
+                     f"стояла. ВНИМАНИЕ: ответы LLM с него могут не приходить.")
                 send_client = parser_client
             else:
                 st["running"] = False
                 return
+        else:
+            _log(f"Аккаунт отправки: {send_who} — авторизован ✓")
 
         # ── parse the resale market on the PARSER client ─────────────────────
         _log("Загружаю каталог Star Gift...")
