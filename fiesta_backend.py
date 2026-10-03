@@ -3743,6 +3743,28 @@ async def _run_manual_outreach(owner_id: int) -> None:
         if parser_client is send_client:
             _log("Парсинг и отправка на одном аккаунте")
 
+        # ── verify the SENDER account is actually authorized ─────────────────
+        # A dead/banned session still "connects" but every request fails with
+        # AuthKeyUnregistered ("key is not registered"). Catch it once here
+        # instead of logging the same error for all 72 sellers.
+        async def _alive(c) -> bool:
+            try:
+                return await c.get_me() is not None
+            except Exception:
+                return False
+
+        if not await _alive(send_client):
+            _log("Аккаунт отправки НЕ авторизован в Telegram — сессия разлогинена "
+                 "или заблокирована. Переавторизуйте его в разделе Sessions.")
+            if parser_client is not send_client and await _alive(parser_client):
+                _log("Отправляю с аккаунта парсинга, чтобы рассылка не стояла. "
+                     "ВНИМАНИЕ: ответы LLM с него могут не приходить — почините "
+                     "аккаунт 'Отписи и ответы'.")
+                send_client = parser_client
+            else:
+                st["running"] = False
+                return
+
         # ── parse the resale market on the PARSER client ─────────────────────
         _log("Загружаю каталог Star Gift...")
         try:
@@ -3856,6 +3878,9 @@ async def _run_manual_outreach(owner_id: int) -> None:
                 if uname:
                     try:
                         entity = await send_client.get_entity(uname)
+                    except (tg.AuthKeyUnregisteredError, tg.SessionRevokedError,
+                            tg.SessionExpiredError):
+                        raise  # dead session — handled below, stops the run
                     except Exception as e:
                         _log(f"Не удалось найти {label}: {e}")
                         entity = None
@@ -3919,6 +3944,14 @@ async def _run_manual_outreach(owner_id: int) -> None:
                 _log(f"Задержка {delay}с...")
                 await asyncio.sleep(delay)
 
+            except (
+                tg.AuthKeyUnregisteredError,
+                tg.SessionRevokedError,
+                tg.SessionExpiredError,
+            ) as e:
+                _log(f"Аккаунт отправки отключён Telegram ({type(e).__name__}) — "
+                     f"рассылка остановлена. Переавторизуйте аккаунт в Sessions.")
+                break
             except (
                 tg.ChatWriteForbiddenError,
                 tg.UserBannedInChannelError,
