@@ -3699,6 +3699,10 @@ async def _run_manual_outreach(owner_id: int) -> None:
             _log("Не задан текст рассылки")
             st["running"] = False
             return
+        if not cfg.agent_enabled:
+            _log("ВНИМАНИЕ: агент ВЫКЛЮЧЕН. Сообщения уйдут, но LLM НЕ будет "
+                 "отвечать на ответы. Включите переключатель агента, чтобы "
+                 "запустить обработчик входящих.")
         if not settings.telethon_ready:
             _log("Telethon не настроен на сервере")
             st["running"] = False
@@ -4241,7 +4245,9 @@ async def cancel_login(
 
 @sessions_router.patch("/{session_id}", response_model=SessionOut)
 async def patch_session(
-    body: SessionPatch, session_id: str = SessionId, user: TgUser = Depends(current_user)
+    body: SessionPatch, session_id: str = SessionId,
+    user: TgUser = Depends(current_user),
+    dispatcher: MessageDispatcher = Depends(_dispatcher),
 ) -> SessionOut:
     changes: dict[str, Any] = body.model_dump(exclude_none=True)
     async with connect() as db:
@@ -4255,7 +4261,25 @@ async def patch_session(
                 (*changes.values(), session_id, user.id),
             )
             await db.commit()
-        return _out(await _owned(db, user.id, session_id))
+        row = await _owned(db, user.id, session_id)
+        cfg = await load_agent_config(db, user.id)
+
+    # Keep the live listener in sync with the session's role. A listener runs
+    # only while the agent is enabled AND the session is an active dispatcher;
+    # otherwise it must be stopped. Without this, toggling a session's role in
+    # the UI changed only the DB and the account never started answering.
+    if settings.telethon_ready and ("usage_type" in changes or "is_active" in changes):
+        should_listen = (
+            cfg.agent_enabled
+            and bool(row["is_active"])
+            and row["usage_type"] == "dispatcher"
+        )
+        with contextlib.suppress(Exception):
+            if should_listen:
+                await dispatcher.start_session(session_id, user.id)
+            else:
+                await dispatcher.stop_session(session_id)
+    return _out(row)
 
 
 @sessions_router.delete("/{session_id}", response_model=DeleteOut)
