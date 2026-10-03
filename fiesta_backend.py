@@ -3580,7 +3580,12 @@ async def outreach_start_endpoint(
 ) -> dict:
     st = _outreach_status.get(user.id, {})
     if st.get("running"):
-        return {"ok": False, "error": "already_running"}
+        # A run is only really alive for a bounded time. If "running" has been
+        # stuck for >15 min (task died, server state is stale) let a fresh
+        # start override it instead of blocking the button forever.
+        started = st.get("started_at") or 0
+        if now() - started < 900:
+            return {"ok": False, "error": "already_running"}
 
     async with connect() as db:
         cfg = await load_agent_config(db, user.id)
