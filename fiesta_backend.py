@@ -3611,17 +3611,21 @@ async def outreach_stop_endpoint(
 async def _run_manual_outreach(owner_id: int) -> None:
     """One-shot gift-marketplace outreach for one owner.
 
-    Parses the Star Gift resale market, then messages each seller and lets the
-    dispatcher's LLM continue the conversation.
+    Two roles, which may be two different accounts:
 
-    Critically, parsing and sending happen on ONE client — preferably the
-    dispatcher's already-connected client for this owner. Telegram peers are
-    addressed by (user_id, access_hash); an access_hash obtained by one account
-    is not valid for another, and a bare user_id cannot be resolved by an
-    account that never met that user. Reusing a single connected client keeps
-    the access_hash from the resale API valid at send time, avoids opening the
-    session's SQLite file twice ("database is locked"), and ensures replies land
-    on an account whose listener is running so the LLM answers.
+      * PARSER  — scans the Star Gift resale market (heavy API traffic).
+                  Prefers a 'monitor' session; falls back to the sender.
+      * SENDER  — messages the sellers and is the account whose dispatcher
+                  listener answers replies with the LLM. Must be a
+                  'dispatcher' session, and its already-connected client is
+                  reused so its SQLite session file is never opened twice.
+
+    Why sellers are resolved by username before messaging: the resale API
+    returns sellers as "min" user objects whose access_hash is only valid in
+    that response's context — Telethon will not cache them and cannot DM them
+    directly. Resolving the username gives the SENDER account its own full,
+    valid entity, which also makes a separate parser account work. Sellers
+    with no username cannot be cold-messaged across accounts and are skipped.
     """
     from telethon.tl import functions as tl_functions
 
@@ -3638,14 +3642,30 @@ async def _run_manual_outreach(owner_id: int) -> None:
         if len(st["log"]) > 100:
             st["log"] = st["log"][-50:]
 
-    client = None
-    own_client = False
+    opened: list = []  # clients we opened ourselves and must disconnect
+
+    async def _open(sess_row) -> "TelegramClient | None":
+        path = _file_for(sess_row)
+        if not path.exists():
+            return None
+        c = TelegramClient(
+            str(path), settings.api_id, settings.api_hash,
+            device_model="FiestaAI Outreach", timeout=30,
+        )
+        await asyncio.wait_for(c.connect(), 20)
+        if not await c.is_user_authorized():
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(c.disconnect(), 5)
+            return None
+        opened.append(c)
+        return c
+
     try:
         async with connect() as db:
             cfg = await load_agent_config(db, owner_id)
-            all_sessions = await db.execute_fetchall(
+            all_sessions = list(await db.execute_fetchall(
                 "SELECT * FROM sessions WHERE owner_id = ? AND is_active = 1", (owner_id,)
-            )
+            ))
             if not all_sessions:
                 _log("Нет активных сессий — добавьте аккаунт в разделе Sessions")
                 st["running"] = False
@@ -3674,52 +3694,59 @@ async def _run_manual_outreach(owner_id: int) -> None:
             _log("Не задан текст рассылки")
             st["running"] = False
             return
+        if not settings.telethon_ready:
+            _log("Telethon не настроен на сервере")
+            st["running"] = False
+            return
 
-        # Prefer the dispatcher's live client: same account parses + sends, its
-        # listener answers replies, and the session file is not reopened.
+        # ── pick the SENDER (dispatcher account; reuse its live client) ──────
+        send_client = None
         session_id = None
         disp = _DISPATCHER_REF
         if disp is not None:
             for sid in disp.sessions_for_owner(owner_id):
                 c = disp._clients.get(sid)
                 if c is not None and c.is_connected():
-                    client = c
+                    send_client = c
                     session_id = sid
-                    own_client = False
-                    _log("Использую активный аккаунт-диспатчер (LLM будет отвечать)")
                     break
-
-        if client is None:
+        if send_client is not None:
+            _log("Отправка: активный аккаунт-диспатчер (LLM будет отвечать на ответы)")
+        else:
             disp_sessions = [s for s in all_sessions if s["usage_type"] == "dispatcher"]
+            if not disp_sessions:
+                _log("ВНИМАНИЕ: нет сессии типа 'dispatcher'. Рассылка пойдёт, но LLM "
+                     "НЕ ответит на ответы. Задайте аккаунту тип 'dispatcher' и включите агента")
             target = (disp_sessions or all_sessions)[0]
             session_id = target["id"]
-            if not disp_sessions:
-                _log("ВНИМАНИЕ: нет запущенного диспатчера — рассылка пойдёт, но LLM "
-                     "не ответит на ответы. Включите агента и задайте сессии тип 'dispatcher'")
-            if not settings.telethon_ready:
-                _log("Telethon не настроен")
-                st["running"] = False
-                return
-            path = _file_for(target)
-            if not path.exists():
-                _log("Файл сессии не найден — переавторизуйте аккаунт")
-                st["running"] = False
-                return
-            _log("Подключаюсь к Telegram...")
-            client = TelegramClient(
-                str(path), settings.api_id, settings.api_hash,
-                device_model="FiestaAI Outreach", timeout=30,
-            )
-            await asyncio.wait_for(client.connect(), 20)
-            own_client = True
-            if not await client.is_user_authorized():
-                _log("Аккаунт не авторизован")
+            send_client = await _open(target)
+            if send_client is None:
+                _log("Аккаунт отправки не авторизован — переавторизуйте в разделе Sessions")
                 st["running"] = False
                 return
 
+        # ── pick the PARSER (prefer a different 'monitor' account) ───────────
+        # Never reopen a session whose dispatcher listener is already live —
+        # a second client on the same .session file deadlocks SQLite.
+        live_ids = set(disp._clients.keys()) if disp is not None else set()
+        parser_client = send_client
+        other = [s for s in all_sessions
+                 if s["id"] != session_id and s["id"] not in live_ids and _file_for(s).exists()]
+        monitor_first = [s for s in other if s["usage_type"] == "monitor"] + \
+                        [s for s in other if s["usage_type"] != "monitor"]
+        for cand in monitor_first:
+            pc = await _open(cand)
+            if pc is not None:
+                parser_client = pc
+                _log("Парсинг маркета: отдельный аккаунт (не трогает аккаунт отправки)")
+                break
+        if parser_client is send_client:
+            _log("Парсинг и отправка на одном аккаунте")
+
+        # ── parse the resale market on the PARSER client ─────────────────────
         _log("Загружаю каталог Star Gift...")
         try:
-            catalog = await client(tl_functions.payments.GetStarGiftsRequest(hash=0))
+            catalog = await parser_client(tl_functions.payments.GetStarGiftsRequest(hash=0))
         except Exception as e:
             _log(f"GetStarGiftsRequest ошибка: {e}")
             st["running"] = False
@@ -3736,8 +3763,7 @@ async def _run_manual_outreach(owner_id: int) -> None:
 
         resale_gift_count = 0
         skipped_contacted = 0
-        # Keep the full User entity: it carries the access_hash needed to
-        # message a seller we have never talked to.
+        skipped_no_username = 0
         sellers: list[dict] = []
         for g in catalog_gifts:
             if st.get("stop_requested"):
@@ -3756,7 +3782,7 @@ async def _run_manual_outreach(owner_id: int) -> None:
             _log(f"Подарок {gift_title}: {resale_count} в продаже, сканирую продавцов...")
 
             try:
-                resale_result = await client(
+                resale_result = await parser_client(
                     tl_functions.payments.GetResaleStarGiftsRequest(
                         gift_id=gift_id, offset="", limit=50
                     )
@@ -3780,21 +3806,22 @@ async def _run_manual_outreach(owner_id: int) -> None:
                 seller_id = getattr(owner_peer, "user_id", None)
                 if seller_id is None or seller_id <= 0:
                     continue
-                if seller_id == owner_id:
+                if seller_id == owner_id or seller_id in {s["user_id"] for s in sellers}:
                     continue
                 if seller_id in already_contacted:
                     skipped_contacted += 1
                     continue
                 user_obj = users_by_id.get(seller_id)
-                if user_obj is None:
-                    # No entity → no access_hash → cannot be messaged reliably.
+                if user_obj is not None and getattr(user_obj, "bot", False):
                     continue
-                if getattr(user_obj, "bot", False):
+                uname = getattr(user_obj, "username", None) if user_obj else None
+                # Cross-account send needs a username to re-resolve a valid hash.
+                if uname is None and parser_client is not send_client:
+                    skipped_no_username += 1
                     continue
-                already_contacted.add(seller_id)
                 sellers.append({
                     "user_id": seller_id,
-                    "username": getattr(user_obj, "username", None),
+                    "username": uname,
                     "entity": user_obj,
                 })
 
@@ -3804,22 +3831,47 @@ async def _run_manual_outreach(owner_id: int) -> None:
         if not sellers:
             if resale_gift_count == 0:
                 _log("На маркете сейчас нет подарков в перепродаже — попробуйте позже")
-            elif skipped_contacted:
+            elif skipped_contacted and not skipped_no_username:
                 _log(f"Новых продавцов нет: всем {skipped_contacted} уже писали ранее")
+            elif skipped_no_username:
+                _log(f"Продавцы без username пропущены ({skipped_no_username}) — "
+                     f"для отдельного аккаунта парсинга им нельзя написать. "
+                     f"Используйте один аккаунт для парсинга и отправки")
             else:
                 _log(f"Продавцов не найдено (просканировано {resale_gift_count} подарков)")
             st["running"] = False
             return
         _log(f"Найдено {len(sellers)} продавцов, начинаю рассылку...")
 
+        # ── send on the SENDER client, resolving each seller by username ─────
         for tgt in sellers:
             if st.get("stop_requested"):
                 _log("Остановлено пользователем")
                 break
-            entity = tgt["entity"]
             uname = tgt["username"]
             label = f"@{uname}" if uname else str(tgt["user_id"])
             try:
+                # Resolve a full, send-valid entity on the SENDER account.
+                entity = None
+                if uname:
+                    try:
+                        entity = await send_client.get_entity(uname)
+                    except Exception as e:
+                        _log(f"Не удалось найти {label}: {e}")
+                        entity = None
+                if entity is None and parser_client is send_client and tgt["entity"] is not None:
+                    entity = tgt["entity"]  # same account: the parsed entity is valid
+                if entity is None:
+                    st["errors"] += 1
+                    _log(f"Пропуск {label}: не удалось получить контакт")
+                    async with connect() as db:
+                        await db.execute(
+                            "INSERT OR IGNORE INTO outreach_log (owner_id, session_id, target_user_id, target_username, status, ts) VALUES (?, ?, ?, ?, 'error', ?)",
+                            (owner_id, session_id, tgt["user_id"], uname, now()),
+                        )
+                        await db.commit()
+                    continue
+
                 if cfg.target_filter_enabled:
                     if cfg.target_premium_only and not getattr(entity, "premium", False):
                         _log(f"Пропуск {label}: нет Premium")
@@ -3832,7 +3884,7 @@ async def _run_manual_outreach(owner_id: int) -> None:
                         continue
                     if cfg.target_skip_empty_bio:
                         try:
-                            full = await client(
+                            full = await send_client(
                                 tl_functions.users.GetFullUserRequest(entity)
                             )
                             if not (getattr(full.full_user, "about", "") or "").strip():
@@ -3841,8 +3893,7 @@ async def _run_manual_outreach(owner_id: int) -> None:
                         except Exception:
                             pass
 
-                # Send by entity (carries access_hash), never by bare id.
-                await client.send_message(entity, cfg.outreach_text)
+                await send_client.send_message(entity, cfg.outreach_text)
                 st["sent"] += 1
                 st["last_target"] = label
                 _log(f"Отправлено {label} ({st['sent']}/{st['total_sellers']})")
@@ -3896,9 +3947,9 @@ async def _run_manual_outreach(owner_id: int) -> None:
     except Exception as e:
         _log(f"Критическая ошибка: {e}")
     finally:
-        if own_client and client is not None:
+        for c in opened:
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(client.disconnect(), 10)
+                await asyncio.wait_for(c.disconnect(), 10)
         st["running"] = False
 
 # ════════════════════════════════════════════════════════════════════════════
