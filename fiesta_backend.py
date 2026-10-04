@@ -233,7 +233,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
     reply_delay_max INTEGER NOT NULL DEFAULT 60,
     manual_pause_minutes INTEGER NOT NULL DEFAULT 30,
     fewshot_limit INTEGER NOT NULL DEFAULT 15,
-    groq_model TEXT NOT NULL DEFAULT 'llama-3.3-70b-specdec',
+    groq_model TEXT NOT NULL DEFAULT 'openai/gpt-oss-120b',
     diagnostic_mode INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
@@ -416,6 +416,13 @@ async def init_db() -> None:
         ac_cols = {r[1] for r in await db.execute_fetchall("PRAGMA table_info(agent_config)")}
         if "log_channel_id" not in ac_cols:
             await db.execute("ALTER TABLE agent_config ADD COLUMN log_channel_id INTEGER NOT NULL DEFAULT 0")
+        # Migrate rows still pointing at decommissioned Groq models, else their
+        # reply generation 404s and the agent silently never answers.
+        placeholders = ",".join("?" * len(_DEAD_GROQ_MODELS))
+        await db.execute(
+            f"UPDATE user_settings SET groq_model = ? WHERE groq_model IN ({placeholders})",
+            (DEFAULT_GROQ_MODEL, *_DEAD_GROQ_MODELS),
+        )
         await db.commit()
 
 
@@ -574,8 +581,15 @@ def reset_rate_limits() -> None:
 # ════════════════════════════════════════════════════════════════════════════
 
 UsageType = Literal["monitor", "dispatcher"]
-GroqModel = Literal["llama-3.3-70b-specdec", "llama-3.1-8b-instant"]
-GROQ_MODELS: list[str] = ["llama-3.3-70b-specdec", "llama-3.1-8b-instant"]
+GroqModel = Literal["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+GROQ_MODELS: list[str] = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+# Groq model IDs that were decommissioned — any user row still pointing at one
+# is migrated to the current default on startup so replies don't 404.
+_DEAD_GROQ_MODELS: list[str] = [
+    "llama-3.3-70b-specdec", "llama-3.1-8b-instant", "llama-3.3-70b-versatile",
+    "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it",
+]
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 ChatFilterKind = Literal["whitelist", "blacklist"]
 LogFilter = Literal["all", "client_bot", "manual", "errors"]
 LogKind = Literal["incoming", "bot", "manual", "draft", "error"]
@@ -2198,7 +2212,7 @@ def _split_message(text: str, max_len: int = 400) -> list[str]:
 
 
 class LLMAgent:
-    def __init__(self, api_key: str, base_url: str, default_model: str = "llama-3.3-70b-specdec") -> None:
+    def __init__(self, api_key: str, base_url: str, default_model: str = DEFAULT_GROQ_MODEL) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
@@ -2644,7 +2658,9 @@ class MessageDispatcher:
                 user_settings_row = await (
                     await db.execute("SELECT groq_model FROM user_settings WHERE owner_id = ?", (owner_id,))
                 ).fetchone()
-                model = user_settings_row["groq_model"] if user_settings_row else "llama-3.3-70b-specdec"
+                model = user_settings_row["groq_model"] if user_settings_row else DEFAULT_GROQ_MODEL
+                if not model or model in _DEAD_GROQ_MODELS:
+                    model = DEFAULT_GROQ_MODEL
 
                 ctx_limit = cfg.context_messages
                 recent = await db.execute_fetchall(
