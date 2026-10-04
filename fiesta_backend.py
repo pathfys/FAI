@@ -4395,51 +4395,6 @@ async def _gift_loop(interval: int) -> None:
 outreach_log_mod = logging.getLogger("fiesta.outreach")
 
 
-gift_outreach_log = logging.getLogger("fiesta.gift_outreach")
-
-
-async def _gift_market_outreach_loop(interval: int = 300) -> None:
-    """Automatic gift-marketplace outreach for every owner with the agent enabled.
-
-    Reuses the exact engine the manual button runs, so both paths behave
-    identically: parse the Star Gift marketplace, pick resale sellers, message
-    them, and let the dispatcher's LLM take over the conversation from there.
-    """
-    await asyncio.sleep(15)
-    while True:
-        try:
-            async with connect() as db:
-                owners = await db.execute_fetchall(
-                    "SELECT DISTINCT owner_id FROM sessions WHERE is_active = 1"
-                )
-                candidates = []
-                for orow in owners:
-                    oid = orow["owner_id"]
-                    cfg = await load_agent_config(db, oid)
-                    if cfg.agent_enabled and cfg.outreach_text.strip():
-                        candidates.append(oid)
-
-            for oid in candidates:
-                st = _outreach_status.get(oid)
-                if st and st.get("running"):
-                    continue
-                if not settings.telethon_ready:
-                    continue
-                _outreach_status[oid] = {
-                    "running": True, "sent": 0, "total_sellers": 0,
-                    "errors": 0, "last_target": None, "started_at": now(),
-                    "log": [], "stop_requested": False, "auto": True,
-                }
-                try:
-                    await _run_manual_outreach(oid)
-                except Exception as e:
-                    gift_outreach_log.error("auto outreach failed owner=%s: %s", oid, e)
-                    _outreach_status[oid]["running"] = False
-        except Exception as e:
-            gift_outreach_log.error("gift outreach loop error: %s", e)
-        await asyncio.sleep(interval)
-
-
 async def _auto_start_dispatchers(dispatcher: MessageDispatcher) -> None:
     """Start dispatchers for all active dispatcher-type sessions."""
     async with connect() as db:
@@ -4482,7 +4437,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     janitor = asyncio.create_task(_janitor(manager))
     gift_task = asyncio.create_task(_gift_loop(settings.gift_parse_interval))
-    gift_outreach_task = asyncio.create_task(_gift_market_outreach_loop(300))
     log_worker_task = asyncio.create_task(_log_channel_worker())
 
     if llm.ready and settings.telethon_ready:
@@ -4499,7 +4453,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         janitor.cancel()
         gift_task.cancel()
-        gift_outreach_task.cancel()
         log_worker_task.cancel()
         await dispatcher.shutdown()
         await llm.close()
