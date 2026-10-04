@@ -590,6 +590,16 @@ _DEAD_GROQ_MODELS: list[str] = [
     "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it",
 ]
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def safe_groq_model(model: str | None) -> str:
+    """Return a usable model id: the current default when `model` is empty or
+    points at a decommissioned Groq model that would 404 at request time."""
+    if not model or model in _DEAD_GROQ_MODELS:
+        return DEFAULT_GROQ_MODEL
+    return model
+
+
 ChatFilterKind = Literal["whitelist", "blacklist"]
 LogFilter = Literal["all", "client_bot", "manual", "errors"]
 LogKind = Literal["incoming", "bot", "manual", "draft", "error"]
@@ -1103,9 +1113,12 @@ class DashboardOut(BaseModel):
 # ════════════════════════════════════════════════════════════════════════════
 
 async def load_user_settings(db: aiosqlite.Connection, owner_id: int) -> SettingsOut:
+    # Set groq_model explicitly: on a DB created before the default changed,
+    # the column default is still a decommissioned model, so relying on it
+    # would seed new rows with a dead model.
     await db.execute(
-        "INSERT OR IGNORE INTO user_settings (owner_id, updated_at) VALUES (?, ?)",
-        (owner_id, now()),
+        "INSERT OR IGNORE INTO user_settings (owner_id, updated_at, groq_model) VALUES (?, ?, ?)",
+        (owner_id, now(), DEFAULT_GROQ_MODEL),
     )
     await db.commit()
     row = await (await db.execute("SELECT * FROM user_settings WHERE owner_id = ?", (owner_id,))).fetchone()
@@ -1122,7 +1135,7 @@ async def load_user_settings(db: aiosqlite.Connection, owner_id: int) -> Setting
         reply_delay_max=row["reply_delay_max"],
         manual_pause_minutes=row["manual_pause_minutes"],
         fewshot_limit=row["fewshot_limit"],
-        groq_model=row["groq_model"],
+        groq_model=safe_groq_model(row["groq_model"]),
         diagnostic_mode=bool(row["diagnostic_mode"]),
         whitelist=lists["whitelist"],
         blacklist=lists["blacklist"],
@@ -2658,9 +2671,7 @@ class MessageDispatcher:
                 user_settings_row = await (
                     await db.execute("SELECT groq_model FROM user_settings WHERE owner_id = ?", (owner_id,))
                 ).fetchone()
-                model = user_settings_row["groq_model"] if user_settings_row else DEFAULT_GROQ_MODEL
-                if not model or model in _DEAD_GROQ_MODELS:
-                    model = DEFAULT_GROQ_MODEL
+                model = safe_groq_model(user_settings_row["groq_model"] if user_settings_row else None)
 
                 ctx_limit = cfg.context_messages
                 recent = await db.execute_fetchall(
@@ -3498,7 +3509,7 @@ async def agent_sandbox(
         user_settings_row = await (
             await db.execute("SELECT groq_model FROM user_settings WHERE owner_id = ?", (user.id,))
         ).fetchone()
-        model = user_settings_row["groq_model"] if user_settings_row else None
+        model = safe_groq_model(user_settings_row["groq_model"] if user_settings_row else None)
     reply, used_model, tok_in, tok_out = await llm.generate(
         body.text, profile, examples, model=model
     )
@@ -4290,11 +4301,17 @@ async def patch_session(
             and bool(row["is_active"])
             and row["usage_type"] == "dispatcher"
         )
-        with contextlib.suppress(Exception):
-            if should_listen:
-                await dispatcher.start_session(session_id, user.id)
-            else:
-                await dispatcher.stop_session(session_id)
+
+        async def _sync_listener() -> None:
+            with contextlib.suppress(Exception):
+                if should_listen:
+                    await dispatcher.start_session(session_id, user.id)
+                else:
+                    await dispatcher.stop_session(session_id)
+
+        # Telethon connect/disconnect can take up to ~20s; do it off the
+        # request path so the UI toggle returns immediately.
+        asyncio.create_task(_sync_listener())
     return _out(row)
 
 
@@ -4396,12 +4413,21 @@ outreach_log_mod = logging.getLogger("fiesta.outreach")
 
 
 async def _auto_start_dispatchers(dispatcher: MessageDispatcher) -> None:
-    """Start dispatchers for all active dispatcher-type sessions."""
+    """Start listeners for active dispatcher sessions whose owner has the agent
+    enabled. Without the agent_enabled check a restart would resume answering
+    for owners who had turned the agent off."""
     async with connect() as db:
         rows = await db.execute_fetchall(
             "SELECT id, owner_id FROM sessions WHERE is_active = 1 AND usage_type = 'dispatcher'"
         )
+        enabled: dict[int, bool] = {}
+        for row in rows:
+            oid = row["owner_id"]
+            if oid not in enabled:
+                enabled[oid] = (await load_agent_config(db, oid)).agent_enabled
     for row in rows:
+        if not enabled.get(row["owner_id"]):
+            continue
         with contextlib.suppress(Exception):
             await dispatcher.start_session(row["id"], row["owner_id"])
 
